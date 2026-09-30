@@ -6,6 +6,8 @@ All notable changes to this plugin are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-09-30
+
 ### Changed
 
 - The Error Prone tab in the Problems tool window groups diagnostics by check or by file, filters them,
@@ -43,5 +45,6 @@ All notable changes to this plugin are documented here. The format follows
 - A diagnostic whose line was deleted, commented out or rewritten is hidden at once instead of
   sliding onto the next line's code.
 
-[unreleased]: https://github.com/salatmaster/errorprone-idea/compare/v0.1.0...HEAD
+[unreleased]: https://github.com/salatmaster/errorprone-idea/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/salatmaster/errorprone-idea/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/salatmaster/errorprone-idea/releases/tag/v0.1.0
