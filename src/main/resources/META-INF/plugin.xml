@@ -1,0 +1,81 @@
+<idea-plugin url="https://github.com/salatmaster/errorprone-idea" require-restart="false">
+    <id>io.github.salatmaster.errorprone</id>
+    <name>Error Prone</name>
+    <vendor email="abstractcoderx@gmail.com" url="https://github.com/salatmaster">salatmaster</vendor>
+
+    <description><![CDATA[
+        <p><b>Error Prone's findings in the editor, on the code they are about.</b></p>
+
+        <p><a href="https://errorprone.info">Error Prone</a> already runs in your Gradle build. Its
+        findings end up in the build log, as text with a file name and a line number, while the
+        code they are about is somewhere else. This plugin puts each diagnostic on that code:</p>
+        <ul>
+          <li><b>An underline in the editor</b> at the exact token, with the check name, the message,
+              Error Prone's suggested fix and a link to the check's documentation in the tooltip</li>
+          <li><b>An "Error Prone" tab in the Problems tool window</b> listing every diagnostic in the
+              project</li>
+          <li><b>Code | Inspect Code</b> and the inspection profile, through the paired Error Prone
+              inspection</li>
+          <li><b>Build | Run Error Prone</b>, which recompiles every Java source set in full so every
+              file is analysed again</li>
+        </ul>
+
+        <p><b>Your build stays the source of truth.</b> The plugin runs no checks of its own and
+        changes nothing about how Error Prone is configured: it reads the diagnostics Gradle reports
+        while the IDE builds. They update with every build &mdash; a warning you fixed disappears
+        when the next build compiles that file &mdash; and follow your edits in between.</p>
+
+        <p><b>Structured, not scraped.</b> Diagnostics come from Gradle's Problems API through the
+        Tooling API, with their file, line and column, not from parsing console output.</p>
+
+        <p>Requires Gradle 8.14 or newer with Error Prone set up in the build (for example with the
+        <code>net.ltgt.errorprone</code> Gradle plugin), and builds run from the IDE. Known
+        limitations are documented in the
+        <a href="https://github.com/salatmaster/errorprone-idea">README</a>.</p>
+
+        <p>Not affiliated with Google or the Error Prone project.</p>
+    ]]></description>
+
+    <depends>com.intellij.java</depends>
+    <depends>com.intellij.gradle</depends>
+
+    <extensions defaultExtensionNs="com.intellij">
+        <applicationConfigurable parentId="tools"
+                                 instance="io.github.salatmaster.errorprone.ErrorProneConfigurable"
+                                 id="io.github.salatmaster.errorprone"
+                                 displayName="Error Prone"/>
+        <editorFactoryDocumentListener implementation="io.github.salatmaster.errorprone.ErrorProneEditListener"/>
+        <externalAnnotator language="JAVA"
+                           implementationClass="io.github.salatmaster.errorprone.ErrorProneExternalAnnotator"/>
+        <!-- Paired with the annotator through getPairedBatchInspectionShortName: turning it off in
+             the profile turns the highlighting off, and Inspect Code lists the diagnostics. -->
+        <localInspection language="JAVA" shortName="ErrorProne" displayName="Error Prone"
+                         groupName="Error Prone" enabledByDefault="true" level="WARNING"
+                         implementationClass="io.github.salatmaster.errorprone.ErrorProneInspection"/>
+        <notificationGroup id="Error Prone" displayType="BALLOON"/>
+        <problemsViewPanelProvider implementation="io.github.salatmaster.errorprone.ErrorProneProblemsTabProvider"/>
+        <postStartupActivity implementation="io.github.salatmaster.errorprone.ErrorProneRestoreActivity"/>
+    </extensions>
+
+    <!-- Every Gradle execution the IDE starts passes through here, including Build Project when it
+         is delegated to Gradle (the default) and Run Error Prone. -->
+    <extensions defaultExtensionNs="org.jetbrains.plugins.gradle">
+        <executionHelperExtension implementation="io.github.salatmaster.errorprone.ErrorProneGradleExtension"/>
+    </extensions>
+
+    <actions>
+        <action id="ErrorProne.Run"
+                class="io.github.salatmaster.errorprone.RunErrorProneAction"
+                text="Run Error Prone"
+                description="Recompile every Java source set with Gradle, so Error Prone reports on every file">
+            <add-to-group group-id="BuildMenu" anchor="last"/>
+        </action>
+        <action id="ErrorProne.ApplyAllFixes"
+                class="io.github.salatmaster.errorprone.ApplyAllErrorProneFixesAction"
+                text="Apply All Error Prone Fixes…"
+                description="Let Error Prone write its fixes for what it currently reports, and review them in Apply Patch">
+            <add-to-group group-id="BuildMenu" anchor="after" relative-to-action="ErrorProne.Run"/>
+        </action>
+    </actions>
+
+</idea-plugin>

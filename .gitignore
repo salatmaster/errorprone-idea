@@ -1,0 +1,61 @@
+### Gradle ###
+.gradle/
+build/
+!gradle/wrapper/gradle-wrapper.jar
+
+### IntelliJ Platform Gradle Plugin ###
+# Sandbox IDE, downloaded platform artifacts, Kotlin incremental caches
+.intellijPlatform/
+.kotlin/
+out/
+
+### IntelliJ IDEA / JetBrains IDEs ###
+# Also covers the .idea/ and build/ that runIde leaves in src/test/testData/sample.
+.idea/
+*.iml
+*.ipr
+*.iws
+
+### Left in the fixture project by runIde -PsampleProject (the IDE generates a wrapper on import) ###
+src/test/testData/sample/gradlew
+src/test/testData/sample/gradlew.bat
+src/test/testData/sample/gradle/
+
+### direnv ###
+.direnv/
+
+### Eclipse ###
+.classpath
+.project
+.settings/
+bin/
+
+### VS Code ###
+.vscode/
+
+### macOS ###
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+
+### Linux ###
+*~
+.directory
+
+### Windows ###
+Thumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+
+### Local / logs ###
+*.log
+local.properties
+
+### Working documents — notes and agent config, not part of the project ###
+docs/superpowers/
+.claude/
+.scratch/
+
+### Nix-generated
+.pre-commit-config.yaml

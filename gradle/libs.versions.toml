@@ -1,0 +1,19 @@
+[versions]
+assertj = "3.27.6"
+changelog = "2.5.0"
+junit = "4.13.2"
+junitJupiter = "5.13.4"
+kotlin = "2.2.21"
+slf4j = "2.0.17"
+
+[libraries]
+assertj = { group = "org.assertj", name = "assertj-core", version.ref = "assertj" }
+junit = { group = "junit", name = "junit", version.ref = "junit" }
+junit-vintage-engine = { group = "org.junit.vintage", name = "junit-vintage-engine", version.ref = "junitJupiter" }
+slf4j-api = { group = "org.slf4j", name = "slf4j-api", version.ref = "slf4j" }
+
+[plugins]
+# Applied only to render a changelog section into <change-notes>; the file itself is cut by
+# .github/scripts/cut-changelog.sh, not by this plugin's patchChangelog task.
+changelog = { id = "org.jetbrains.changelog", version.ref = "changelog" }
+kotlin = { id = "org.jetbrains.kotlin.jvm", version.ref = "kotlin" }
