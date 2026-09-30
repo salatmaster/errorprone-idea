@@ -33,7 +33,8 @@ data class ErrorProneDiagnostic(
             "compiler.note.error.prone" to ErrorProneSeverity.NOTE,
         )
         private val LABEL = Regex("""\[([^\]]+)]\s*(.*)""")
-        private val LINK = Regex("""\(see (\S+)\)""")
+        // A plugin's link may be spaced out: NullAway prints "(see http://t.uber.com/nullaway )".
+        private val LINK = Regex("""\(see (\S+)\s*\)""")
         private val SUGGESTION = Regex("""Did you mean '(.*)'\?""")
 
         /**
@@ -41,7 +42,7 @@ data class ErrorProneDiagnostic(
          * the platform's line separator — which javac does not use, so on Windows the whole text
          * arrives flattened into one line.
          */
-        private val TRAILER = Regex("""\s+(\(see \S+\)|Did you mean ).*$""")
+        private val TRAILER = Regex("""\s+(\(see \S+\s*\)|Did you mean ).*$""")
 
         /**
          * Builds a diagnostic from the parts of a Gradle problem, or returns null when the problem is

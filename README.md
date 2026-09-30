@@ -29,7 +29,8 @@ how Error Prone is configured.
 When the IDE runs a Gradle build — Build Project (delegated to Gradle, the default), a Gradle task,
 a run configuration — Gradle reports each javac diagnostic through its Problems API. The plugin
 listens to those events over the Tooling API and keeps the ones Error Prone produced, with their
-file, line and column. No console output is parsed.
+file, line and column. No console output is parsed. Checks that Error Prone plugins add, such as
+[NullAway](https://github.com/uber/NullAway)'s, arrive the same way.
 
 Diagnostics update with every build:
 

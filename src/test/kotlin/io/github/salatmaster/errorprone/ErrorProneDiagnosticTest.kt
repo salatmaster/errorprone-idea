@@ -101,6 +101,22 @@ class ErrorProneDiagnosticTest {
     }
 
     @Test
+    fun `reads the link of an Error Prone plugin that spaces it out`() {
+        // NullAway's, as javac prints it: a space before the closing parenthesis.
+        val nullAway = """
+            /src/demo/Address.java:38: warning: [NullAway] dereferenced expression 'apartment' is @Nullable
+                return street + ", apt. " + apartment.trim() + ", " + city;
+                                                     ^
+                (see http://t.uber.com/nullaway )
+        """.trimIndent()
+        val flattened = "[NullAway] dereferenced expression 'apartment' is @Nullable     (see http://t.uber.com/nullaway )"
+
+        assertThat(parse(label = "[NullAway] dereferenced expression 'apartment' is @Nullable", details = nullAway)!!.link)
+            .isEqualTo("http://t.uber.com/nullaway")
+        assertThat(parse(label = flattened, details = nullAway)!!.message).isEqualTo("dereferenced expression 'apartment' is @Nullable")
+    }
+
+    @Test
     fun `text is the check and the message`() {
         assertThat(parse()!!.text).isEqualTo(label)
     }

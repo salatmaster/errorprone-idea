@@ -122,15 +122,16 @@ class ErrorProneEndToEndTest {
         assertThat(run.failed).describedAs(run.output).isFalse()
         val main = run.of(":compileJava")
         assertThat(main.outcome).isEqualTo(CompileOutcome.FULL)
-        val own = main.own
+        // NullAway's findings are the next test's.
+        val own = main.own.filter { it.check != "NullAway" }
         // One of each check the shop shows, plus the generated Tabs.java and Crlf.java: well past
         // Gradle's default cap of 15.
         assertThat(own.map { it.check }.toSet()).isEqualTo(SHOP_CHECKS)
-        assertThat(own).hasSize(OWN_DIAGNOSTICS)
+        assertThat(own).hasSize(SHOP_DIAGNOSTICS)
         assertThat(own.map { it.severity }.distinct()).containsExactly(ErrorProneSeverity.WARNING)
         assertThat(own.filter { it.link != "https://errorprone.info/bugpattern/${it.check}" }).isEmpty()
         assertEachPointsAtToString(own.filter { File(it.path).name in setOf("Tabs.java", "Crlf.java") })
-        for (d in own) {
+        for (d in main.own) {
             val line = File(d.path).readLines()[d.line - 1]
             assertThat(expandedColumnToIndex(line, d.column)).describedAs("%s:%d", d.path, d.line).isBetween(0, line.length - 1)
         }
@@ -201,6 +202,22 @@ class ErrorProneEndToEndTest {
         val main = run.of(":compileJava")
         assertThat(main.outcome).isEqualTo(CompileOutcome.FAILED)
         assertThat(main.own).isEmpty()
+    }
+
+    @Test
+    fun `reports what an Error Prone plugin finds like a built-in check`() {
+        val run = build("compileJava")
+
+        val nullAway = run.of(":compileJava").own.filter { it.check == "NullAway" }
+        assertThat(nullAway).hasSize(NULLAWAY_FINDINGS.size)
+        for ((file, message) in NULLAWAY_FINDINGS) {
+            assertThat(nullAway).describedAs("%s: %s", file, message)
+                .filteredOn { File(it.path).name == file && it.message.startsWith(message) }
+                .hasSize(1)
+        }
+        assertThat(nullAway.map { it.severity }.distinct()).containsExactly(ErrorProneSeverity.WARNING)
+        // Printed as "(see http://t.uber.com/nullaway )", unlike Error Prone's own links.
+        assertThat(nullAway.map { it.link }.distinct()).containsExactly("http://t.uber.com/nullaway")
     }
 
     @Test
@@ -296,5 +313,26 @@ private val SHOP_CHECKS = setOf(
     "WaitNotInLoop",
 )
 
+/**
+ * What NullAway finds in the sample's delivery package, the only code it checks (@NullMarked): one of
+ * each kind, as the file it is in and the start of its message.
+ */
+private val NULLAWAY_FINDINGS = listOf(
+    "Address.java" to "initializer method does not guarantee @NonNull field 'instructions'",
+    "Address.java" to "dereferenced expression 'apartment' is @Nullable",
+    "CourierRoster.java" to "dereferenced expression 'onShift.get(zone)' is @Nullable",
+    "CourierRoster.java" to "unboxing of a @Nullable expression",
+    "DeliveryPlanner.java" to "passing @Nullable parameter 'address.zone()' where @NonNull is required",
+    "DeliveryPlanner.java" to "assigning @Nullable expression to @NonNull field",
+    "DeliveryPlanner.java" to "returning @Nullable expression from method with @NonNull return type",
+    "DeliveryPlanner.java" to "switch selector expression 'address.zone()' is @Nullable",
+    "DeliveryPlanner.java" to "enhanced-for expression 'backlog' is @Nullable",
+    "SmsNotifier.java" to "parameter phone is @NonNull, but parameter in superclass method",
+    "NightEta.java" to "method returns @Nullable, but superclass method",
+)
+
 /** The shop's diagnostics, plus a MissingOverride each in the generated Tabs.java and Crlf.java. */
-private val OWN_DIAGNOSTICS = SHOP_CHECKS.size + 2
+private val SHOP_DIAGNOSTICS = SHOP_CHECKS.size + 2
+
+/** Everything the sample's own code gets from :compileJava. */
+private val OWN_DIAGNOSTICS = SHOP_DIAGNOSTICS + NULLAWAY_FINDINGS.size
