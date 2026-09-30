@@ -1,11 +1,14 @@
 package io.github.salatmaster.errorprone
 
+import com.intellij.notification.NotificationAction
 import com.intellij.notification.NotificationGroupManager
 import com.intellij.notification.NotificationType
+import com.intellij.openapi.actionSystem.AnAction
 import com.intellij.openapi.components.Service
 import com.intellij.openapi.components.service
 import com.intellij.openapi.diagnostic.Logger
 import com.intellij.openapi.externalSystem.model.task.ExternalSystemTaskType
+import com.intellij.openapi.ide.CopyPasteManager
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.vfs.LocalFileSystem
 import com.intellij.openapi.vfs.VirtualFile
@@ -13,25 +16,17 @@ import org.gradle.tooling.LongRunningOperation
 import org.gradle.tooling.events.OperationType
 import org.gradle.tooling.events.ProgressEvent
 import org.gradle.tooling.events.ProgressListener
-import org.gradle.tooling.events.problems.LineInFileLocation
-import org.gradle.tooling.events.problems.Problem
-import org.gradle.tooling.events.problems.ProblemSummariesEvent
-import org.gradle.tooling.events.problems.SingleProblemEvent
-import org.gradle.tooling.events.problems.TaskPathLocation
-import org.gradle.tooling.events.task.TaskExecutionResult
-import org.gradle.tooling.events.task.TaskFailureResult
-import org.gradle.tooling.events.task.TaskFinishEvent
-import org.gradle.tooling.events.task.TaskOperationResult
-import org.gradle.tooling.events.task.TaskSuccessResult
+import org.gradle.tooling.events.problems.*
+import org.gradle.tooling.events.task.*
 import org.gradle.util.GradleVersion
 import org.jetbrains.plugins.gradle.service.execution.GradleExecutionContext
 import org.jetbrains.plugins.gradle.service.project.GradleExecutionHelperExtension
 import org.jetbrains.plugins.gradle.settings.GradleExecutionSettings
+import java.awt.datatransfer.StringSelection
+import java.io.File
 import java.nio.file.InvalidPathException
 import java.nio.file.Path
-import java.util.Collections
 import java.util.concurrent.ConcurrentHashMap
-import java.util.concurrent.atomic.AtomicInteger
 
 /**
  * Collects the Error Prone diagnostics of every Gradle task execution the IDE starts: Build Project
@@ -101,9 +96,12 @@ class ErrorProneGradleExtension : GradleExecutionHelperExtension {
                 onJavacLimit = { task ->
                     project.service<ErrorProneNotifier>().once(
                         "javac-limit",
-                        "javac stopped reporting warnings in $task after $JAVAC_MAX_WARNINGS, so the editor shows " +
-                            "only the first $JAVAC_MAX_WARNINGS. To see all of them, raise the limit in the build: " +
-                            "options.compilerArgs.addAll(listOf(\"-Xmaxwarns\", \"10000\")).",
+                        "javac reported only the first $JAVAC_MAX_WARNINGS warnings of $task, so some of Error " +
+                            "Prone's findings there are missing. To see all of them, raise javac's limit in the " +
+                            "build's root script.",
+                        NotificationAction.createSimple("Copy Gradle snippet") {
+                            CopyPasteManager.getInstance().setContents(StringSelection(maxWarningsSnippet(File(build))))
+                        },
                     )
                 },
             )
@@ -163,10 +161,13 @@ class ErrorProneBuildListener(
 ) : ProgressListener {
 
     private val log = Logger.getInstance(ErrorProneBuildListener::class.java)
-    private val pending = ConcurrentHashMap<String, MutableList<ErrorProneDiagnostic>>()
+
+    // Plain collections: Gradle hands one execution's events over one at a time, on one thread
+    // (DaemonClient.monitorBuild; ProviderConnection calls it the contract).
+    private val pending = HashMap<String, MutableList<ErrorProneDiagnostic>>()
 
     /** Every javac warning of a task, Error Prone's or not: javac's limit counts them all. */
-    private val warnings = ConcurrentHashMap<String, AtomicInteger>()
+    private val warnings = HashMap<String, Int>()
 
     override fun statusChanged(event: ProgressEvent) {
         // Anything thrown here would surface in the user's build.
@@ -178,7 +179,7 @@ class ErrorProneBuildListener(
                     onTaskFinished(task, outcomeOf(event.result), pending.remove(task).orEmpty())
                     // javac stops handing warnings over once it reaches its limit, without a word to
                     // Gradle; exactly the default limit is the sign that it did.
-                    if (warnings.remove(task)?.get() == JAVAC_MAX_WARNINGS) onJavacLimit(task)
+                    if (warnings.remove(task) == JAVAC_MAX_WARNINGS) onJavacLimit(task)
                 }
                 is ProblemSummariesEvent -> {
                     val withheld = event.problemSummaries
@@ -194,9 +195,7 @@ class ErrorProneBuildListener(
 
     private fun collect(problem: Problem) {
         val task = problem.contextualLocations.filterIsInstance<TaskPathLocation>().firstOrNull()?.buildTreePath ?: return
-        if (problem.definition.id.name.startsWith("compiler.warn.")) {
-            warnings.computeIfAbsent(task) { AtomicInteger() }.incrementAndGet()
-        }
+        if (problem.definition.id.name.startsWith("compiler.warn.")) warnings.merge(task, 1, Int::plus)
         val location = problem.originLocations.filterIsInstance<LineInFileLocation>().firstOrNull() ?: return
         val diagnostic = ErrorProneDiagnostic.fromProblem(
             code = problem.definition.id.name,
@@ -207,9 +206,20 @@ class ErrorProneBuildListener(
             column = location.column,
             length = location.length,
         ) ?: return
-        pending.computeIfAbsent(task) { Collections.synchronizedList(mutableListOf()) }.add(diagnostic)
+        pending.getOrPut(task) { ArrayList() }.add(diagnostic)
     }
 }
+
+/**
+ * What raises javac's warning limit, in the DSL of the Gradle build at [root], for every project: the
+ * task named is often a subproject's, and the root script is where the line goes.
+ */
+internal fun maxWarningsSnippet(root: File): String =
+    if (File(root, "settings.gradle.kts").exists() || File(root, "build.gradle.kts").exists()) {
+        """allprojects { tasks.withType<JavaCompile>().configureEach { options.compilerArgs.addAll(listOf("-Xmaxwarns", "10000")) } }"""
+    } else {
+        "allprojects { tasks.withType(JavaCompile).configureEach { options.compilerArgs.addAll(['-Xmaxwarns', '10000']) } }"
+    }
 
 /** javac's default -Xmaxwarns: it reports no more warnings than this per compilation. */
 internal const val JAVAC_MAX_WARNINGS = 100
@@ -230,11 +240,16 @@ internal class ErrorProneNotifier(private val project: Project) {
 
     private val shown = ConcurrentHashMap.newKeySet<String>()
 
-    fun once(kind: String, content: String) {
-        if (!shown.add(kind)) return
-        NotificationGroupManager.getInstance()
-            .getNotificationGroup("Error Prone")
-            .createNotification(content, NotificationType.WARNING)
-            .notify(project)
+    fun once(kind: String, content: String, vararg actions: AnAction) {
+        if (shown.add(kind)) notifyErrorProne(project, content, NotificationType.WARNING, *actions)
     }
+}
+
+/** Every notification of the plugin, titled so it says whose it is. */
+internal fun notifyErrorProne(project: Project, content: String, type: NotificationType, vararg actions: AnAction) {
+    NotificationGroupManager.getInstance()
+        .getNotificationGroup("Error Prone")
+        .createNotification("Error Prone", content, type)
+        .apply { actions.forEach(::addAction) }
+        .notify(project)
 }

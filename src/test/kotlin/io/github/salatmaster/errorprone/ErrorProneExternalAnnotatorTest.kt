@@ -187,6 +187,17 @@ class ErrorProneExternalAnnotatorTest : ErrorProneLightTestCase() {
         assertThat(myFixture.filterAvailableIntentions("Apply Error Prone fix")).isEmpty()
     }
 
+    fun `test does not offer Error Prone's fix in generated code, which the next build would undo`() {
+        val text = "class Gen {\n  public String toString() { return \"\"; }\n}\n"
+        myFixture.configureFromExistingVirtualFile(generatedFile("Gen.java", text))
+        myFixture.editor.caretModel.moveToOffset(text.indexOf("toString"))
+        commit(CompileOutcome.FULL, diagnostic(line = 2, column = 17, fixable = true))
+
+        assertThat(myFixture.filterAvailableIntentions("Apply Error Prone fix")).isEmpty()
+        // Still reported, and still suppressible where the generator allows it.
+        assertThat(myFixture.filterAvailableIntentions("Suppress 'MissingOverride'")).hasSize(1)
+    }
+
     fun `test nothing is shown when the inspection is turned off`() {
         myFixture.disableInspections(ErrorProneInspection())
         commit(CompileOutcome.FULL, diagnostic(line = 2, column = 17))

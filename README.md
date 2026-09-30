@@ -1,106 +1,159 @@
-# Error Prone
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="src/main/resources/META-INF/pluginIcon_dark.svg">
+    <img src="src/main/resources/META-INF/pluginIcon.svg" width="80" alt="">
+  </picture>
+</p>
 
-**Error Prone's findings in the IntelliJ IDEA editor, on the code they are about.**
+<h1 align="center">Error Prone for IntelliJ IDEA</h1>
 
-[Error Prone](https://errorprone.info) already runs in your Gradle build. Its findings end up in the
-build log, as text with a file name and a line number. This plugin puts each one on the code it
-concerns, the way the IDE shows its own inspections.
+<p align="center">
+  <b>Error Prone's findings in the editor, on the code they are about — straight from your Gradle build.</b>
+</p>
 
-Not affiliated with Google or the Error Prone project.
+<p align="center">
+  <a href="https://plugins.jetbrains.com/plugin/34671-error-prone"><img src="https://img.shields.io/jetbrains/plugin/v/34671?label=Marketplace" alt="Marketplace version"></a>
+  <a href="https://plugins.jetbrains.com/plugin/34671-error-prone"><img src="https://img.shields.io/jetbrains/plugin/d/34671" alt="Downloads"></a>
+  <a href="https://github.com/salatmaster/errorprone-idea/actions/workflows/build.yml"><img src="https://github.com/salatmaster/errorprone-idea/actions/workflows/build.yml/badge.svg" alt="Build"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/github/license/salatmaster/errorprone-idea" alt="License"></a>
+</p>
 
----
+[Error Prone](https://errorprone.info) already runs in your build, but its findings end up in the build
+log as a file name and a line number. This plugin puts each one on the code it concerns, the way the IDE
+shows its own inspections, and lets you fix or suppress it from there. It runs no checks of its own: your
+build stays the source of truth.
 
-## What it does
+## Features
 
-| Where | What you get |
+- **In the editor.** An underline on the exact token, with the check, the message, Error Prone's
+  suggested fix and a link to the check's documentation in the tooltip.
+- **Fix or suppress with Alt+Enter.** Apply Error Prone's own fix, imports included, or add
+  `@SuppressWarnings` to the method, field or class. Either is one undoable edit, and the highlight goes
+  at once.
+- **A tab in the Problems tool window.** Every diagnostic in the project, grouped by check or by file,
+  with a filter, severity toggles, and the details of the selection with its fix, suppression and
+  documentation a click away.
+- **All fixes at once, by scope.** Apply All Error Prone Fixes asks for a scope as Inspect Code does —
+  the project, a module, a directory — and gathers every fix into one patch to review file by file.
+- **Current after every edit.** Two seconds after you stop typing near a diagnostic, the file is
+  compiled quietly in the background, so a warning you fixed goes away without a build.
+- **Plugins included.** Checks from Error Prone plugins such as [NullAway](https://github.com/uber/NullAway)
+  show up like the built-in ones.
+
+## Getting started
+
+1. **Install the plugin**: <kbd>Settings</kbd> → <kbd>Plugins</kbd> → <kbd>Marketplace</kbd>, search
+   for *Error Prone*. Or download the zip from
+   [Releases](https://github.com/salatmaster/errorprone-idea/releases) and use *Install Plugin from
+   Disk…*.
+2. **Have Error Prone in your Gradle build**, for example with the
+   [`net.ltgt.errorprone`](https://github.com/tbroyer/gradle-errorprone-plugin) plugin:
+
+   ```kotlin
+   plugins {
+       java
+       id("net.ltgt.errorprone") version "5.1.0"
+   }
+
+   dependencies {
+       errorprone("com.google.errorprone:error_prone_core:2.50.0")
+   }
+   ```
+
+3. **Build from the IDE** (<kbd>Build</kbd> → <kbd>Build Project</kbd>), or run <kbd>Build</kbd> →
+   <kbd>Run Error Prone</kbd> to analyse every file, not only the ones an incremental build recompiles.
+
+**Requirements:** IntelliJ IDEA 2026.1 or newer, Gradle 8.14 or newer, builds run from the IDE.
+
+## Where to find things
+
+| Where | What |
 |---|---|
-| Editor | An underline on the exact token, with the check, the message, Error Prone's suggested fix and a link to the check's documentation in the tooltip |
-| Problems tool window | An **Error Prone** tab with every diagnostic in the project; the **File** tab shows the current file's |
-| Inspections | A paired **Error Prone** inspection: turn it off in the profile to hide the highlighting, or run **Code \| Inspect Code** to list the diagnostics |
-| Alt+Enter | **Suppress** a check with `@SuppressWarnings` on the method, field or class, and **Apply Error Prone fix** — Error Prone's own fix, imports included. Both are one undoable edit, and the highlight goes at once |
-| Build menu | **Run Error Prone** recompiles every Java source set in full, so every file is analysed again; **Apply All Error Prone Fixes…** gathers every fix Error Prone has into one patch to review file by file |
-| Settings \| Tools \| Error Prone | **Recompile after editing code Error Prone reported on** (on by default): two seconds after you stop typing near a diagnostic, once the file has no errors, it is saved and Gradle compiles its source set in the background, with no build output |
+| <kbd>Alt+Enter</kbd> on a highlight | Apply Error Prone fix, Suppress with `@SuppressWarnings` |
+| <kbd>View</kbd> → <kbd>Tool Windows</kbd> → <kbd>Problems</kbd> → **Error Prone** | Every diagnostic, grouped and filterable |
+| <kbd>Build</kbd> → <kbd>Run Error Prone</kbd> | Recompile every Java source set in full |
+| <kbd>Build</kbd> → <kbd>Apply All Error Prone Fixes…</kbd> | Every fix in a scope, as one patch; also under <kbd>Code</kbd> → <kbd>Analyze Code</kbd> and the Project view's <kbd>Analyze</kbd> |
+| <kbd>Settings</kbd> → <kbd>Tools</kbd> → <kbd>Error Prone</kbd> | Turn background recompiling after edits on or off |
+| <kbd>Settings</kbd> → <kbd>Editor</kbd> → <kbd>Inspections</kbd> → **Error Prone** | Turn the highlighting off; <kbd>Code</kbd> → <kbd>Inspect Code</kbd> lists the diagnostics |
 
 ## How it works
 
-Your build stays the source of truth. The plugin runs no checks of its own and changes nothing about
-how Error Prone is configured.
+When the IDE runs a Gradle build — Build Project, a Gradle task, a run configuration — Gradle reports
+every javac diagnostic through its Problems API. The plugin listens to those events over the Tooling
+API and keeps Error Prone's, with their file, line and column; no console output is parsed.
 
-When the IDE runs a Gradle build — Build Project (delegated to Gradle, the default), a Gradle task,
-a run configuration — Gradle reports each javac diagnostic through its Problems API. The plugin
-listens to those events over the Tooling API and keeps the ones Error Prone produced, with their
-file, line and column. No console output is parsed. Checks that Error Prone plugins add, such as
-[NullAway](https://github.com/uber/NullAway)'s, arrive the same way.
+Each build updates what you see: a full compile replaces what its task reported before, an incremental
+one updates the files it recompiled, and an up-to-date one changes nothing. A failed compile only adds:
+Error Prone reports nothing once javac finds an error, so its silence proves nothing. Between builds the
+highlights follow your edits, a diagnostic whose line you delete or rewrite is hidden at once, and all
+of them survive an IDE restart.
 
-Diagnostics update with every build:
+## FAQ
 
-- a compile task that ran in full replaces everything it reported before, so a warning you fixed
-  disappears;
-- an incremental compile updates the files it recompiled and keeps the rest;
-- a failed compile only adds what it reported: Error Prone says nothing at all once javac finds an
-  error, so a file saved half-way through an edit keeps its diagnostics;
-- an up-to-date or cached compile changes nothing.
+<details>
+<summary><b>Nothing shows up.</b></summary>
 
-Between builds, the highlights follow your edits — and they stay while the file has other errors,
-since those say nothing about what the last build found. A diagnostic whose line you change (delete,
-comment out, rewrite; reindenting does not count) is hidden at once, and comes back if the next
-compile still reports it.
+Check that the build runs from the IDE (a terminal `./gradlew build` does not reach it), on Gradle 8.14
+or newer, and that Error Prone is in the build. An up-to-date build compiles nothing and so reports
+nothing: <kbd>Build</kbd> → <kbd>Run Error Prone</kbd> compiles everything again.
+</details>
 
-Only javac can tell whether a warning is gone, so an edit on a diagnostic's line, or in the method or
-field that holds it, has the file saved and its source set compiled two seconds after you stop typing.
-Not while the file has an error the IDE can see: javac would stop at it, and Error Prone then reports
-nothing. The compile shows only as progress in the status bar. Turn it off in Settings | Tools |
-Error Prone to wait for your own builds instead. They also survive an IDE restart, so the
-first build after it, which usually compiles nothing, does not leave the editor blank.
+<details>
+<summary><b>It says javac stopped at 100 warnings.</b></summary>
 
-## Requirements
+javac reports at most 100 warnings per compile task. The notification copies the line that raises the
+limit, in your build's DSL, for the root build script. The plugin does not add it itself: a compiler
+argument that differs between IDE and terminal builds would make every switch between them recompile
+everything.
+</details>
 
-- IntelliJ IDEA 2026.1 or newer.
-- Gradle 8.14 or newer, with Error Prone set up in the build — for example with the
-  [`net.ltgt.errorprone`](https://github.com/tbroyer/gradle-errorprone-plugin) Gradle plugin.
-  Older Gradle versions do not report javac diagnostics to the IDE in a form the plugin can use;
-  builds run as usual, and Run Error Prone says why nothing is shown.
-- Builds run from the IDE.
+<details>
+<summary><b>It reports on generated code.</b></summary>
 
-## Limitations
+Error Prone checks everything javac compiles. To leave generated sources out, set
+`options.errorprone.excludedPaths = ".*/build/generated/.*"` (or `disableWarningsInGeneratedCode = true`
+for code marked `@Generated`). Either way the plugin never applies a fix to generated code, which the
+next generation would undo.
+</details>
 
-- **Builds outside the IDE are not seen.** A `./gradlew build` in a terminal does not reach the
-  plugin; run the build from the IDE, or use Run Error Prone.
-- **A file changed while the IDE was closed loses its diagnostics.** They are kept across restarts,
-  but a pull or checkout in between moves the code they point at; the next build that compiles the
-  file, or Run Error Prone, brings them back.
-- **Gradle only.** Maven and the IDE's own build system (JPS) are not supported.
-- **Included builds need Gradle 9.7.** Before 9.7, Gradle reports an included build's diagnostics
-  under the root build's task of the same name, so they can disappear when only one of the two builds
-  recompiles. Run Error Prone does not reach included builds on any Gradle version; their
-  diagnostics appear when the IDE builds them.
-- **Local projects only.** A build that runs in WSL, Docker or on a remote host reports paths the
-  plugin cannot open.
-- **javac reports at most 100 warnings per compile task** unless the build raises its `-Xmaxwarns`.
-  The plugin says so when a task reaches the limit; to see every warning, add
-  `options.compilerArgs.addAll(listOf("-Xmaxwarns", "10000"))` to the compile tasks.
-- **Fixes come from a build.** Error Prone keeps its fixes to itself until a build writes them out,
-  so applying one runs a short Gradle build first. Writing fixes needs the
-  [`net.ltgt.errorprone`](https://github.com/tbroyer/gradle-errorprone-plugin) Gradle plugin, and
-  Error Prone writes all of a check's fixes in a file together, so "Apply Error Prone fix" covers the
-  whole file. Error Prone applies the first fix it suggests, and a few of those use Guava
-  (`Splitter`, `ImmutableList`): a fix that uses a class the module does not have, or whose lines
-  were edited while it was being written, is not applied; a notification says why and offers it in
-  Apply Patch.
-- **Gradle's problems report grows.** To receive more than 15 Error Prone warnings, the plugin raises
-  Gradle's internal limit for IDE builds (`org.gradle.internal.problem.summary.threshold`), so the
-  HTML problems report Gradle writes lists every warning as well.
-- **Recompiling after an edit waits for other Gradle builds.** It starts nothing while a Gradle task
-  of the project runs, so a long-running one (`bootRun`, a Gradle test run) holds it off until it
-  ends. It only follows edits near a diagnostic: a new warning in clean code shows after the next
-  build.
-- **Incremental builds can leave a stale warning** on a file that did not change but was recompiled
-  because a file it depends on did. Run Error Prone clears it.
+<details>
+<summary><b>A fix was not applied.</b></summary>
 
-## Building from source
+Error Prone keeps its fixes to itself until a build writes them out, so applying one runs a short
+Gradle build that needs the `net.ltgt.errorprone` plugin. A fix that uses a class the module does not
+have (a few use Guava), or whose code changed while the build ran, is left out; the notification says
+why and offers the patch to review.
+</details>
 
-See [CONTRIBUTING.md](CONTRIBUTING.md).
+<details>
+<summary><b>Gradle's HTML problems report lists every warning now.</b></summary>
+
+Gradle forwards only 15 warnings of a kind to the IDE unless told otherwise, and every Error Prone
+warning is one kind. The plugin raises that limit for the builds the IDE runs, and the report Gradle
+writes follows it.
+</details>
+
+## Known limitations
+
+- **Gradle only**, and **local builds only**: Maven, the IDE's own build system, and builds in WSL,
+  Docker or on a remote host are not supported.
+- **Included builds need Gradle 9.7**: before it, Gradle files their diagnostics under the root build's
+  task of the same name. Run Error Prone does not reach included builds at all; they update when the IDE
+  builds them.
+- **A file changed while the IDE was closed** (a pull, a checkout) loses its diagnostics until the next
+  build compiles it.
+- **An incremental build can leave a stale warning** on a file that was recompiled only because a file
+  it depends on changed. Run Error Prone clears it.
+- **Recompiling after an edit** follows edits near a diagnostic only, and waits while another Gradle
+  task of the project runs, a long `bootRun` included.
+- **Fixes cover a whole file**: Error Prone writes all of a check's fixes in a file together, so
+  Apply Error Prone fix applies them together.
+
+## Contributing
+
+Building, testing and releasing are described in [CONTRIBUTING.md](CONTRIBUTING.md). Bugs and ideas go to
+[issues](https://github.com/salatmaster/errorprone-idea/issues).
 
 ## License
 
-[Apache License 2.0](LICENSE).
+[Apache License 2.0](LICENSE). Not affiliated with Google or the Error Prone project.

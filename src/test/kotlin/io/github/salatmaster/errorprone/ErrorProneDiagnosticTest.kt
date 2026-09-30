@@ -117,6 +117,20 @@ class ErrorProneDiagnosticTest {
     }
 
     @Test
+    fun `reads a suggestion Error Prone escaped as the text it stands for`() {
+        val details = "/src/demo/Ru.java:6: warning: [MissingSummary] A summary line is required\n" +
+            "  Did you mean '/** Returns \\u0441\\u043f\\u0438\\u0441\\u043e\\u043a.'?"
+
+        assertThat(parse(details = details)!!.suggestion).isEqualTo("/** Returns список.")
+    }
+
+    @Test
+    fun `leaves escaped invisible characters escaped`() {
+        // A no-break space, a zero-width space and a byte order mark would vanish into the code.
+        assertThat(unescapeNonAscii("a\\u00a0b\\u200bc\\ufeffd\\u0441")).isEqualTo("a\\u00a0b\\u200bc\\ufeffdс")
+    }
+
+    @Test
     fun `text is the check and the message`() {
         assertThat(parse()!!.text).isEqualTo(label)
     }

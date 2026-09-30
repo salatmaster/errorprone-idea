@@ -7,8 +7,8 @@ import com.intellij.openapi.actionSystem.AnActionEvent
 import com.intellij.openapi.externalSystem.model.execution.ExternalSystemTaskExecutionSettings
 import com.intellij.openapi.externalSystem.service.execution.ExternalSystemRunConfiguration
 import com.intellij.openapi.externalSystem.service.execution.ProgressExecutionMode
-import com.intellij.openapi.externalSystem.util.ExternalSystemUtil
 import com.intellij.openapi.externalSystem.task.TaskCallback
+import com.intellij.openapi.externalSystem.util.ExternalSystemUtil
 import com.intellij.openapi.externalSystem.util.task.TaskExecutionSpec
 import com.intellij.openapi.project.DumbAwareAction
 import com.intellij.openapi.project.Project
@@ -55,6 +55,8 @@ internal val ERROR_PRONE_INIT_SCRIPT: String = errorProneInitScript()
  * incremental. doNotTrackState would say it in one line, but JavaCompile then fails with "Changes are
  * not tracked"; the Specs constants rather than closures keep the script usable with the
  * configuration cache. Task selection by name does not reach included builds; the README says so.
+ * Nothing here is an input of JavaCompile, so the next ordinary build finds the tasks up to date and
+ * keeps what this one reported; a compiler argument (javac's -Xmaxwarns, say) would recompile them all.
  *
  * With [patchChecks], Error Prone also writes the fixes of those checks into [patchDir], one patch
  * per compile task, and runs only those checks. That takes the net.ltgt.errorprone plugin: the flags
@@ -97,7 +99,7 @@ fun runErrorProne(project: Project) {
 }
 
 /**
- * Runs [tasks] of the Gradle build at [root], with [initScript] if any, its output in the Build tool
+ * Runs [tasks] of the Gradle build at [root] with [initScript], its output in the Build tool
  * window under [name]. [mark] tells the Gradle hook which of this plugin's builds it is. The Build window
  * comes forward when the build starts only if [activate], and when it fails.
  * [onFinished] runs however it ended.
@@ -107,8 +109,8 @@ internal fun runGradle(
     root: String,
     tasks: List<String>,
     name: String,
-    initScript: String? = null,
-    mark: Key<Boolean>? = null,
+    initScript: String,
+    mark: Key<Boolean>,
     activate: Boolean = false,
     onFinished: () -> Unit = {},
 ) {
@@ -119,12 +121,10 @@ internal fun runGradle(
         taskNames = tasks
     }
     val userData = UserDataHolderBase().apply {
-        mark?.let { putUserData(it, true) }
-        if (initScript != null) {
-            // GradleTaskManager writes the script to a temporary file and passes --init-script.
-            putUserData(GradleTaskManager.INIT_SCRIPT_KEY, initScript)
-            putUserData(GradleTaskManager.INIT_SCRIPT_PREFIX_KEY, "errorprone")
-        }
+        putUserData(mark, true)
+        // GradleTaskManager writes the script to a temporary file and passes --init-script.
+        putUserData(GradleTaskManager.INIT_SCRIPT_KEY, initScript)
+        putUserData(GradleTaskManager.INIT_SCRIPT_PREFIX_KEY, "errorprone")
         // The Build tool window, where compiler output belongs, rather than the Run one.
         putUserData(ExternalSystemRunConfiguration.PROGRESS_LISTENER_KEY, BuildViewManager::class.java)
     }

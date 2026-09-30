@@ -141,6 +141,17 @@ class ErrorProneDiagnosticsTest : ErrorProneLightTestCase() {
         assertThat(ranges()).hasSize(1)
     }
 
+    fun `test remembers which task last changed something, and when`() {
+        myFixture.configureByText("Many.java", source)
+        val before = System.currentTimeMillis()
+
+        commit(CompileOutcome.FULL, diagnostic(line = 2, column = 17))
+
+        val (task, time) = store.lastUpdate!!
+        assertThat(task).isEqualTo(":compileJava")
+        assertThat(time).isGreaterThanOrEqualTo(before)
+    }
+
     fun `test a task that never reported anything changes nothing`() {
         myFixture.configureByText("Many.java", source)
         var notifications = 0

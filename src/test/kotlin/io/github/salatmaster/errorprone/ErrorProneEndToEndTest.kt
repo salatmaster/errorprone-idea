@@ -136,6 +136,7 @@ class ErrorProneEndToEndTest {
             assertThat(expandedColumnToIndex(line, d.column)).describedAs("%s:%d", d.path, d.line).isBetween(0, line.length - 1)
         }
         assertThat(run.cutOff).isZero()
+        assertThat(run.javacLimited).isEmpty()
     }
 
     @Test
@@ -233,11 +234,6 @@ class ErrorProneEndToEndTest {
         assertThat(build("compileJava").javacLimited).isEmpty()
     }
 
-    @Test
-    fun `does not mention the javac limit below it`() {
-        assertThat(build("compileJava").javacLimited).isEmpty()
-    }
-
     private fun initScript(text: String = ERROR_PRONE_INIT_SCRIPT): String =
         dir.resolve("errorprone.init.gradle").toFile()
             .apply { writeText(text) }
@@ -281,6 +277,8 @@ class ErrorProneEndToEndTest {
         // A source set of the build's own, which only "every JavaCompile" reaches.
         assertThat(run.of(":compileExtraJava").outcome).isEqualTo(CompileOutcome.FULL)
         assertThat(run.of(":compileExtraJava").diagnostics.map { File(it.path).name }).containsExactly("ReindexTool.java")
+        // It changes no input of the compile tasks, so the next ordinary build keeps what it found.
+        assertThat(build("compileJava").of(":compileJava").outcome).isEqualTo(CompileOutcome.NONE)
     }
 
     @Test
