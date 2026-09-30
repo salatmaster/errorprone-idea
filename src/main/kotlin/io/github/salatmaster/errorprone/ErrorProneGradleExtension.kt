@@ -13,25 +13,15 @@ import org.gradle.tooling.LongRunningOperation
 import org.gradle.tooling.events.OperationType
 import org.gradle.tooling.events.ProgressEvent
 import org.gradle.tooling.events.ProgressListener
-import org.gradle.tooling.events.problems.LineInFileLocation
-import org.gradle.tooling.events.problems.Problem
-import org.gradle.tooling.events.problems.ProblemSummariesEvent
-import org.gradle.tooling.events.problems.SingleProblemEvent
-import org.gradle.tooling.events.problems.TaskPathLocation
-import org.gradle.tooling.events.task.TaskExecutionResult
-import org.gradle.tooling.events.task.TaskFailureResult
-import org.gradle.tooling.events.task.TaskFinishEvent
-import org.gradle.tooling.events.task.TaskOperationResult
-import org.gradle.tooling.events.task.TaskSuccessResult
+import org.gradle.tooling.events.problems.*
+import org.gradle.tooling.events.task.*
 import org.gradle.util.GradleVersion
 import org.jetbrains.plugins.gradle.service.execution.GradleExecutionContext
 import org.jetbrains.plugins.gradle.service.project.GradleExecutionHelperExtension
 import org.jetbrains.plugins.gradle.settings.GradleExecutionSettings
 import java.nio.file.InvalidPathException
 import java.nio.file.Path
-import java.util.Collections
 import java.util.concurrent.ConcurrentHashMap
-import java.util.concurrent.atomic.AtomicInteger
 
 /**
  * Collects the Error Prone diagnostics of every Gradle task execution the IDE starts: Build Project
@@ -163,10 +153,13 @@ class ErrorProneBuildListener(
 ) : ProgressListener {
 
     private val log = Logger.getInstance(ErrorProneBuildListener::class.java)
-    private val pending = ConcurrentHashMap<String, MutableList<ErrorProneDiagnostic>>()
+
+    // Plain collections: Gradle hands one execution's events over one at a time, on one thread
+    // (DaemonClient.monitorBuild; ProviderConnection calls it the contract).
+    private val pending = HashMap<String, MutableList<ErrorProneDiagnostic>>()
 
     /** Every javac warning of a task, Error Prone's or not: javac's limit counts them all. */
-    private val warnings = ConcurrentHashMap<String, AtomicInteger>()
+    private val warnings = HashMap<String, Int>()
 
     override fun statusChanged(event: ProgressEvent) {
         // Anything thrown here would surface in the user's build.
@@ -178,7 +171,7 @@ class ErrorProneBuildListener(
                     onTaskFinished(task, outcomeOf(event.result), pending.remove(task).orEmpty())
                     // javac stops handing warnings over once it reaches its limit, without a word to
                     // Gradle; exactly the default limit is the sign that it did.
-                    if (warnings.remove(task)?.get() == JAVAC_MAX_WARNINGS) onJavacLimit(task)
+                    if (warnings.remove(task) == JAVAC_MAX_WARNINGS) onJavacLimit(task)
                 }
                 is ProblemSummariesEvent -> {
                     val withheld = event.problemSummaries
@@ -194,9 +187,7 @@ class ErrorProneBuildListener(
 
     private fun collect(problem: Problem) {
         val task = problem.contextualLocations.filterIsInstance<TaskPathLocation>().firstOrNull()?.buildTreePath ?: return
-        if (problem.definition.id.name.startsWith("compiler.warn.")) {
-            warnings.computeIfAbsent(task) { AtomicInteger() }.incrementAndGet()
-        }
+        if (problem.definition.id.name.startsWith("compiler.warn.")) warnings.merge(task, 1, Int::plus)
         val location = problem.originLocations.filterIsInstance<LineInFileLocation>().firstOrNull() ?: return
         val diagnostic = ErrorProneDiagnostic.fromProblem(
             code = problem.definition.id.name,
@@ -207,7 +198,7 @@ class ErrorProneBuildListener(
             column = location.column,
             length = location.length,
         ) ?: return
-        pending.computeIfAbsent(task) { Collections.synchronizedList(mutableListOf()) }.add(diagnostic)
+        pending.getOrPut(task) { ArrayList() }.add(diagnostic)
     }
 }
 

@@ -136,6 +136,7 @@ class ErrorProneEndToEndTest {
             assertThat(expandedColumnToIndex(line, d.column)).describedAs("%s:%d", d.path, d.line).isBetween(0, line.length - 1)
         }
         assertThat(run.cutOff).isZero()
+        assertThat(run.javacLimited).isEmpty()
     }
 
     @Test
@@ -230,11 +231,6 @@ class ErrorProneEndToEndTest {
 
         assertThat(run.of(":compileJava").diagnostics).hasSize(100)
         assertThat(run.javacLimited).containsExactly(":compileJava")
-        assertThat(build("compileJava").javacLimited).isEmpty()
-    }
-
-    @Test
-    fun `does not mention the javac limit below it`() {
         assertThat(build("compileJava").javacLimited).isEmpty()
     }
 

@@ -33,14 +33,7 @@ import com.intellij.openapi.vcs.changes.patch.ApplyPatchAction
 import com.intellij.openapi.vfs.LocalFileSystem
 import com.intellij.openapi.vfs.VfsUtilCore
 import com.intellij.openapi.vfs.VirtualFile
-import com.intellij.psi.JavaPsiFacade
-import com.intellij.psi.PsiClass
-import com.intellij.psi.PsiDocumentManager
-import com.intellij.psi.PsiField
-import com.intellij.psi.PsiFile
-import com.intellij.psi.PsiManager
-import com.intellij.psi.PsiMethod
-import com.intellij.psi.PsiModifierListOwner
+import com.intellij.psi.*
 import com.intellij.psi.util.PsiTreeUtil
 import com.intellij.util.concurrency.AppExecutorUtil
 import org.jetbrains.plugins.gradle.settings.GradleSettings
@@ -218,38 +211,29 @@ internal fun fixWithErrorProne(
     val patchDir = FileUtil.createTempDirectory("errorprone-fixes", null).toPath().toRealPath()
     // In the background, as a step of a quick fix.
     runGradle(project, root, tasks, "Error Prone fixes", errorProneInitScript(checks, patchDir), PATCH_BUILD) {
-        ApplicationManager.getApplication().executeOnPooledThread { collectFixes(project, root, patchDir, checks, keep, onPatch) }
+        ApplicationManager.getApplication().executeOnPooledThread {
+            // Read whether or not the build succeeded: a compile that fails still writes what it found.
+            val patch = try {
+                collectPatch(patchDir, realPath(Path.of(project.basePath ?: root)) ?: patchDir, keep)
+            } catch (e: IOException) {
+                log.warn("Could not read Error Prone's fixes from $patchDir", e)
+                ""
+            }
+            if (patch.isBlank()) {
+                NotificationGroupManager.getInstance().getNotificationGroup("Error Prone")
+                    .createNotification(
+                        "Error Prone wrote no fix for ${checks.joinToString()}. Writing fixes needs the " +
+                            "net.ltgt.errorprone Gradle plugin, and a build that gets as far as Error Prone.",
+                        NotificationType.WARNING,
+                    )
+                    .notify(project)
+                return@executeOnPooledThread
+            }
+            val combined = patchDir.resolve("Error Prone fixes.patch").apply { writeText(patch) }
+            // Found here rather than on the EDT, where a refresh is a slow operation.
+            LocalFileSystem.getInstance().refreshAndFindFileByNioFile(combined)?.let(onPatch)
+        }
     }
-}
-
-private fun collectFixes(
-    project: Project,
-    root: String,
-    patchDir: Path,
-    checks: Collection<String>,
-    keep: (Path) -> Boolean,
-    onPatch: (VirtualFile) -> Unit,
-) {
-    // Read whether or not the build succeeded: a compile that fails still writes what it found.
-    val patch = try {
-        collectPatch(patchDir, realPath(Path.of(project.basePath ?: root)) ?: patchDir, keep)
-    } catch (e: IOException) {
-        log.warn("Could not read Error Prone's fixes from $patchDir", e)
-        ""
-    }
-    if (patch.isBlank()) {
-        NotificationGroupManager.getInstance().getNotificationGroup("Error Prone")
-            .createNotification(
-                "Error Prone wrote no fix for ${checks.joinToString()}. Writing fixes needs the " +
-                    "net.ltgt.errorprone Gradle plugin, and a build that gets as far as Error Prone.",
-                NotificationType.WARNING,
-            )
-            .notify(project)
-        return
-    }
-    val combined = patchDir.resolve("Error Prone fixes.patch").apply { writeText(patch) }
-    // Found here rather than on the EDT, where a refresh is a slow operation.
-    LocalFileSystem.getInstance().refreshAndFindFileByNioFile(combined)?.let(onPatch)
 }
 
 private fun showApplyPatch(project: Project, patch: VirtualFile) {
