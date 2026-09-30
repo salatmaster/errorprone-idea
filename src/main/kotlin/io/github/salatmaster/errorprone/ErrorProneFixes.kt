@@ -1,13 +1,13 @@
 package io.github.salatmaster.errorprone
 
+import com.intellij.analysis.AnalysisScope
+import com.intellij.analysis.BaseAnalysisAction
 import com.intellij.codeInsight.intention.IntentionAction
 import com.intellij.codeInsight.intention.preview.IntentionPreviewInfo
 import com.intellij.codeInsight.intention.preview.IntentionPreviewUtils
 import com.intellij.codeInspection.JavaSuppressionUtil
 import com.intellij.notification.NotificationAction
-import com.intellij.notification.NotificationGroupManager
 import com.intellij.notification.NotificationType
-import com.intellij.openapi.actionSystem.ActionUpdateThread
 import com.intellij.openapi.actionSystem.AnActionEvent
 import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.application.ModalityState
@@ -24,8 +24,10 @@ import com.intellij.openapi.editor.Document
 import com.intellij.openapi.editor.Editor
 import com.intellij.openapi.editor.RangeMarker
 import com.intellij.openapi.fileEditor.FileDocumentManager
-import com.intellij.openapi.project.DumbAwareAction
+import com.intellij.openapi.project.DumbAware
 import com.intellij.openapi.project.Project
+import com.intellij.openapi.roots.GeneratedSourcesFilter
+import com.intellij.openapi.roots.ProjectFileIndex
 import com.intellij.openapi.util.Key
 import com.intellij.openapi.util.TextRange
 import com.intellij.openapi.util.io.FileUtil
@@ -54,12 +56,16 @@ internal val PATCH_BUILD: Key<Boolean> = Key.create("errorprone.patch")
  * Error Prone writes its fixes as one unified diff per compile task, every path relative to the
  * directory the patch is in. Returns the sections of [patch] for the files [keep] accepts, with
  * paths relative to [projectDir] as the IDE's Apply Patch expects them, or "" when none is kept.
- * Both directories must be real paths: Error Prone relativised against the one it was given.
+ * Both directories must be real paths: Error Prone relativised against the one it was given. The
+ * non-ASCII text Error Prone escaped in the lines it adds is written out again (see [unescapeNonAscii]),
+ * unless the lines it replaces had the same escape: those the code already had stay as written.
  */
 internal fun rebasePatch(patch: String, patchDir: Path, projectDir: Path, keep: (Path) -> Boolean = { true }): String {
     val out = StringBuilder()
     val lines = patch.lines()
     var keeping = false
+    // The escapes in the removed lines of the change at hand; a context line ends a change.
+    val removedEscapes = HashSet<String>()
     var i = 0
     while (i < lines.size) {
         val line = lines[i]
@@ -76,7 +82,12 @@ internal fun rebasePatch(patch: String, patchDir: Path, projectDir: Path, keep: 
             i += 2
             continue
         }
-        if (keeping && (line.isNotEmpty() || i < lines.lastIndex)) out.append(line).append('\n')
+        if (keeping && (line.isNotEmpty() || i < lines.lastIndex)) {
+            val added = line.startsWith("+")
+            if (line.startsWith("-")) UNICODE_ESCAPE.findAll(line).forEach { removedEscapes += it.groupValues[2].lowercase() }
+            else if (!added) removedEscapes.clear()
+            out.append(if (added) unescapeNonAscii(line, removedEscapes) else line).append('\n')
+        }
         i++
     }
     return out.toString()
@@ -157,38 +168,80 @@ internal class ApplyErrorProneFix(
             !applyFix(project, file, check, fix) -> "The code Error Prone's fix for '$check' changes was edited while the fix was being written"
             else -> return
         }
-        NotificationGroupManager.getInstance().getNotificationGroup("Error Prone")
-            .createNotification("$why, so it was not applied.", NotificationType.INFORMATION)
-            .addAction(NotificationAction.createSimpleExpiring("Review in Apply Patch…") { showApplyPatch(project, patch) })
-            .notify(project)
+        notifyErrorProne(
+            project, "$why, so it was not applied.", NotificationType.INFORMATION,
+            NotificationAction.createSimpleExpiring("Review in Apply Patch…") { showApplyPatch(project, patch) },
+        )
     }
 }
 
 /**
- * Build | Apply All Error Prone Fixes: every fix Error Prone has for the checks it currently reports,
- * across every linked Gradle build, in Apply Patch, where files can be left out and each one diffed.
+ * Apply All Error Prone Fixes, under Build and Analyze: every fix Error Prone has for what it reports in
+ * a scope chosen as for Inspect Code, generated code aside, in Apply Patch, where files can be left out
+ * and each one diffed.
  */
-class ApplyAllErrorProneFixesAction : DumbAwareAction() {
-
-    override fun getActionUpdateThread(): ActionUpdateThread = ActionUpdateThread.BGT
+class ApplyAllErrorProneFixesAction(
+    /** Only these checks' fixes, when the Error Prone tab asks for one check's. */
+    private val checks: Set<String>? = null,
+) : BaseAnalysisAction("Error Prone Fixes", "Error Prone fixes"), DumbAware {
 
     override fun update(e: AnActionEvent) {
-        val project = e.project
-        e.presentation.isEnabledAndVisible = project != null &&
-            GradleSettings.getInstance(project).linkedProjectsSettings.isNotEmpty()
-        e.presentation.isEnabled = project != null && ErrorProneDiagnostics.getInstance(project).fixableChecks().isNotEmpty()
+        super.update(e)
+        val project = e.project ?: return
+        e.presentation.isVisible = GradleSettings.getInstance(project).linkedProjectsSettings.isNotEmpty()
+        e.presentation.isEnabled = e.presentation.isEnabled && ErrorProneDiagnostics.getInstance(project).fixableChecks().isNotEmpty()
     }
 
-    override fun actionPerformed(e: AnActionEvent) {
-        val project = e.project ?: return
-        val checks = ErrorProneDiagnostics.getInstance(project).fixableChecks()
-        if (checks.isEmpty()) return
-        for (linked in GradleSettings.getInstance(project).linkedProjectsSettings) {
-            fixWithErrorProne(project, linked.externalProjectPath, listOf(ERROR_PRONE_TASK), checks, { true }) {
-                showApplyPatch(project, it)
-            }
+    /** Called on the EDT once the scope is chosen; a module or directory scope lists its files when first asked, so that happens off it. */
+    public override fun analyze(project: Project, scope: AnalysisScope) {
+        val inScope = { file: VirtualFile -> scope.contains(file) }
+        ReadAction.nonBlocking<Map<String, FixRun>> { fixRuns(project, checks, inScope) }
+            .expireWith(project)
+            .finishOnUiThread(ModalityState.nonModal()) { runs -> fix(project, scope, inScope, runs) }
+            .submit(AppExecutorUtil.getAppExecutorService())
+    }
+
+    private fun fix(project: Project, scope: AnalysisScope, inScope: (VirtualFile) -> Boolean, runs: Map<String, FixRun>) {
+        if (runs.isEmpty()) {
+            val what = checks?.joinToString() ?: "what it reports"
+            notifyErrorProne(project, "Error Prone has no fix for $what in ${scope.displayName}.", NotificationType.INFORMATION)
+            return
+        }
+        // Error Prone fixes the whole of every task it compiles; only the files in scope are kept.
+        val keep = { path: Path ->
+            nonBlockingRead { LocalFileSystem.getInstance().findFileByNioFile(path)?.let { inScope(it) && !isGeneratedCode(project, it) } == true }
+        }
+        for ((root, run) in runs) {
+            fixWithErrorProne(project, root, run.tasks.toList(), run.checks, keep) { showApplyPatch(project, it) }
         }
     }
+}
+
+/** What one Gradle build compiles to write fixes: the [tasks] that reported them, and their [checks]. */
+internal data class FixRun(val tasks: Set<String>, val checks: Set<String>)
+
+/**
+ * The fixes Error Prone has for the files [inScope] accepts, generated code aside, and for [checks] if
+ * given, by the root of the Gradle build that reported them. Call in a read action.
+ */
+internal fun fixRuns(project: Project, checks: Set<String>? = null, inScope: (VirtualFile) -> Boolean): Map<String, FixRun> {
+    val store = ErrorProneDiagnostics.getInstance(project)
+    return store.files().filter { inScope(it) && !isGeneratedCode(project, it) }
+        .flatMap(store::forFile)
+        .filter { it.diagnostic.fixable && (checks == null || it.diagnostic.check in checks) }
+        .groupBy { it.task.substringBeforeLast('|') }
+        .mapValues { (_, located) -> FixRun(located.mapTo(HashSet()) { it.task.substringAfterLast('|') }, located.mapTo(HashSet()) { it.diagnostic.check }) }
+}
+
+/**
+ * Whether [file] is regenerated rather than edited, so a fix there would not last: the IDE knows it as
+ * generated (annotation processing, the idea plugin's generatedSourceDirs), or its source root sits in an
+ * excluded folder, as a code generator's output in Gradle's build directory does. Call in a read action.
+ */
+internal fun isGeneratedCode(project: Project, file: VirtualFile): Boolean {
+    if (GeneratedSourcesFilter.isGeneratedSourceByAnyFilter(file, project)) return true
+    val index = ProjectFileIndex.getInstance(project)
+    return index.getSourceRootForFile(file)?.parent?.let(index::isExcluded) == true
 }
 
 private val log = Logger.getInstance("io.github.salatmaster.errorprone.ErrorProneFixes")
@@ -220,13 +273,12 @@ internal fun fixWithErrorProne(
                 ""
             }
             if (patch.isBlank()) {
-                NotificationGroupManager.getInstance().getNotificationGroup("Error Prone")
-                    .createNotification(
-                        "Error Prone wrote no fix for ${checks.joinToString()}. Writing fixes needs the " +
-                            "net.ltgt.errorprone Gradle plugin, and a build that gets as far as Error Prone.",
-                        NotificationType.WARNING,
-                    )
-                    .notify(project)
+                notifyErrorProne(
+                    project,
+                    "Error Prone wrote no fix for ${checks.joinToString()}. Writing fixes needs the " +
+                        "net.ltgt.errorprone Gradle plugin, and a build that gets as far as Error Prone.",
+                    NotificationType.WARNING,
+                )
                 return@executeOnPooledThread
             }
             val combined = patchDir.resolve("Error Prone fixes.patch").apply { writeText(patch) }

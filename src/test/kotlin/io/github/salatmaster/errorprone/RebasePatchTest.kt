@@ -51,6 +51,28 @@ class RebasePatchTest {
     }
 
     @Test
+    fun `turns back the escapes Error Prone writes for non-ASCII text, but not the code's own`() {
+        // Error Prone's Javadoc fixes print through javac's pretty printer, which escapes non-ASCII text.
+        // Plain strings: Kotlin turns \u escapes into characters even in a raw string.
+        val escaped = listOf(
+            "--- ../../../work/shop/src/main/java/Channels.java",
+            "+++ ../../../work/shop/src/main/java/Channels.java",
+            "@@ -1,3 +1,4 @@",
+            "-  /** @return список */",
+            "+  /** Returns \\u0441\\u043f\\u0438\\u0441\\u043e\\u043a.",
+            "+ */",
+            "-  String e = \"\\u00e9\"; String t = \"\\\\u0442\"; public String toString() { return e; }",
+            "+  String e = \"\\u00e9\"; String t = \"\\\\u0442\"; @Override public String toString() { return e; }",
+        ).joinToString("\n")
+
+        val rebased = rebasePatch(escaped, patchDir, project)
+
+        assertThat(rebased).contains("+  /** Returns список.\n")
+        // One the code already had, and one that is no escape at all: its backslash is escaped.
+        assertThat(rebased).contains("+  String e = \"\\u00e9\"; String t = \"\\\\u0442\"; @Override")
+    }
+
+    @Test
     fun `is empty when no file is kept`() {
         assertThat(rebasePatch(patch, patchDir, project) { false }).isEmpty()
     }

@@ -33,13 +33,15 @@ class ErrorProneExternalAnnotator : ExternalAnnotator<List<Located>, List<Locate
 
     override fun apply(file: PsiFile, annotationResult: List<Located>, holder: AnnotationHolder) {
         val virtualFile = file.virtualFile ?: return
+        // The next generation would undo a fix there.
+        val fixable = !isGeneratedCode(file.project, virtualFile)
         for (located in annotationResult) {
             val (diagnostic, range) = located
             if (range.endOffset > file.textLength) continue
             var annotation = holder.newAnnotation(diagnostic.severity.highlight, diagnostic.text)
                 .range(visibleRange(file, range))
                 .tooltip(tooltip(diagnostic))
-            if (diagnostic.fixable) annotation = annotation.withFix(ApplyErrorProneFix(diagnostic.check, located.task, virtualFile))
+            if (diagnostic.fixable && fixable) annotation = annotation.withFix(ApplyErrorProneFix(diagnostic.check, located.task, virtualFile))
             annotation.withFix(SuppressErrorProneFix(diagnostic.check, located.marker)).create()
         }
     }

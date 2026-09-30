@@ -75,12 +75,29 @@ data class ErrorProneDiagnostic(
                 severity = severity,
                 message = parts.groupValues[2].replace(TRAILER, ""),
                 link = details?.let { LINK.find(it)?.groupValues?.get(1) },
-                suggestion = details?.let { SUGGESTION.find(it)?.groupValues?.get(1) },
+                suggestion = details?.let { SUGGESTION.find(it)?.groupValues?.get(1) }?.let(::unescapeNonAscii),
                 fixable = details?.contains("Did you mean") == true,
             )
         }
     }
 }
+
+/** A Unicode escape as javac reads one: its backslash is not itself escaped, and it may have several u's. */
+internal val UNICODE_ESCAPE = Regex("""(?<!\\)((?:\\\\)*)\\u+(\p{XDigit}{4})""")
+
+/**
+ * [text] with its escaped non-ASCII characters written out, except the escapes in [kept] (their four hex
+ * digits, lower case). Error Prone's Javadoc fixes print through javac's pretty printer, which writes
+ * anything beyond ASCII as a \u escape: "список" comes out as six of them. To javac the two are the
+ * same (JLS 3.3), in comments and literals alike.
+ */
+// ponytail: an escaped surrogate pair (an emoji) stays escaped; decoding pairs is the upgrade if one shows up.
+internal fun unescapeNonAscii(text: String, kept: Set<String> = emptySet()): String =
+    UNICODE_ESCAPE.replace(text) { match ->
+        val hex = match.groupValues[2]
+        val char = hex.toInt(16).toChar()
+        if (char.code < 0x80 || char.isSurrogate() || hex.lowercase() in kept) match.value else match.groupValues[1] + char
+    }
 
 private const val TAB_WIDTH = 8
 
