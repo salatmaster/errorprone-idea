@@ -6,6 +6,21 @@ All notable changes to this plugin are documented here. The format follows
 
 ## [Unreleased]
 
+### Changed
+
+- The Error Prone tab in the Problems tool window groups diagnostics by check or by file, filters them,
+  and shows the details of the selection, with its fix, its suppression and its documentation a click
+  away.
+- Apply All Error Prone Fixes asks for a scope as Inspect Code does, compiles only what that scope
+  needs, and is also under Analyze in the Project view's context menu.
+- Every notification of the plugin is titled Error Prone. The one about javac's 100-warning limit
+  copies the line that raises it, in the build's DSL.
+
+### Fixed
+
+- Fixes keep non-ASCII text as written: Error Prone's Javadoc fixes turned it into `\u` escapes.
+- Fixes are no longer offered or applied in generated code, which the next generation would undo.
+
 ## [0.1.0] - 2026-09-30
 
 ### Added
