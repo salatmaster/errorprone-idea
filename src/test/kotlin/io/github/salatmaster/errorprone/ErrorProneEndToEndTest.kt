@@ -277,6 +277,8 @@ class ErrorProneEndToEndTest {
         // A source set of the build's own, which only "every JavaCompile" reaches.
         assertThat(run.of(":compileExtraJava").outcome).isEqualTo(CompileOutcome.FULL)
         assertThat(run.of(":compileExtraJava").diagnostics.map { File(it.path).name }).containsExactly("ReindexTool.java")
+        // It changes no input of the compile tasks, so the next ordinary build keeps what it found.
+        assertThat(build("compileJava").of(":compileJava").outcome).isEqualTo(CompileOutcome.NONE)
     }
 
     @Test

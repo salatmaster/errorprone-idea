@@ -1,11 +1,14 @@
 package io.github.salatmaster.errorprone
 
+import com.intellij.notification.NotificationAction
 import com.intellij.notification.NotificationGroupManager
 import com.intellij.notification.NotificationType
+import com.intellij.openapi.actionSystem.AnAction
 import com.intellij.openapi.components.Service
 import com.intellij.openapi.components.service
 import com.intellij.openapi.diagnostic.Logger
 import com.intellij.openapi.externalSystem.model.task.ExternalSystemTaskType
+import com.intellij.openapi.ide.CopyPasteManager
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.vfs.LocalFileSystem
 import com.intellij.openapi.vfs.VirtualFile
@@ -19,6 +22,8 @@ import org.gradle.util.GradleVersion
 import org.jetbrains.plugins.gradle.service.execution.GradleExecutionContext
 import org.jetbrains.plugins.gradle.service.project.GradleExecutionHelperExtension
 import org.jetbrains.plugins.gradle.settings.GradleExecutionSettings
+import java.awt.datatransfer.StringSelection
+import java.io.File
 import java.nio.file.InvalidPathException
 import java.nio.file.Path
 import java.util.concurrent.ConcurrentHashMap
@@ -91,9 +96,12 @@ class ErrorProneGradleExtension : GradleExecutionHelperExtension {
                 onJavacLimit = { task ->
                     project.service<ErrorProneNotifier>().once(
                         "javac-limit",
-                        "javac stopped reporting warnings in $task after $JAVAC_MAX_WARNINGS, so the editor shows " +
-                            "only the first $JAVAC_MAX_WARNINGS. To see all of them, raise the limit in the build: " +
-                            "options.compilerArgs.addAll(listOf(\"-Xmaxwarns\", \"10000\")).",
+                        "javac reported only the first $JAVAC_MAX_WARNINGS warnings of $task, so some of Error " +
+                            "Prone's findings there are missing. To see all of them, raise javac's limit in the " +
+                            "build's root script.",
+                        NotificationAction.createSimple("Copy Gradle snippet") {
+                            CopyPasteManager.getInstance().setContents(StringSelection(maxWarningsSnippet(File(build))))
+                        },
                     )
                 },
             )
@@ -202,6 +210,17 @@ class ErrorProneBuildListener(
     }
 }
 
+/**
+ * What raises javac's warning limit, in the DSL of the Gradle build at [root], for every project: the
+ * task named is often a subproject's, and the root script is where the line goes.
+ */
+internal fun maxWarningsSnippet(root: File): String =
+    if (File(root, "settings.gradle.kts").exists() || File(root, "build.gradle.kts").exists()) {
+        """allprojects { tasks.withType<JavaCompile>().configureEach { options.compilerArgs.addAll(listOf("-Xmaxwarns", "10000")) } }"""
+    } else {
+        "allprojects { tasks.withType(JavaCompile).configureEach { options.compilerArgs.addAll(['-Xmaxwarns', '10000']) } }"
+    }
+
 /** javac's default -Xmaxwarns: it reports no more warnings than this per compilation. */
 internal const val JAVAC_MAX_WARNINGS = 100
 
@@ -221,11 +240,16 @@ internal class ErrorProneNotifier(private val project: Project) {
 
     private val shown = ConcurrentHashMap.newKeySet<String>()
 
-    fun once(kind: String, content: String) {
-        if (!shown.add(kind)) return
-        NotificationGroupManager.getInstance()
-            .getNotificationGroup("Error Prone")
-            .createNotification(content, NotificationType.WARNING)
-            .notify(project)
+    fun once(kind: String, content: String, vararg actions: AnAction) {
+        if (shown.add(kind)) notifyErrorProne(project, content, NotificationType.WARNING, *actions)
     }
+}
+
+/** Every notification of the plugin, titled so it says whose it is. */
+internal fun notifyErrorProne(project: Project, content: String, type: NotificationType, vararg actions: AnAction) {
+    NotificationGroupManager.getInstance()
+        .getNotificationGroup("Error Prone")
+        .createNotification("Error Prone", content, type)
+        .apply { actions.forEach(::addAction) }
+        .notify(project)
 }

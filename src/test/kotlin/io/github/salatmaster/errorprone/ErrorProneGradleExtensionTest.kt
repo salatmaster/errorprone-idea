@@ -64,12 +64,7 @@ class ErrorProneGradleExtensionTest : ErrorProneLightTestCase() {
     }
 
     fun `test says Gradle is too old only when Run Error Prone was asked for`() {
-        val shown = mutableListOf<String>()
-        project.messageBus.connect(testRootDisposable).subscribe(Notifications.TOPIC, object : Notifications {
-            override fun notify(notification: Notification) {
-                shown += notification.content
-            }
-        })
+        val shown = notifications()
 
         // Most projects on an old Gradle do not use Error Prone at all; an ordinary build says nothing.
         assertThat(build(context(version = "8.10"), javaFile("A"))).isZero()
@@ -77,7 +72,41 @@ class ErrorProneGradleExtensionTest : ErrorProneLightTestCase() {
 
         assertThat(build(context(version = "8.10", runErrorProne = true), javaFile("B"))).isZero()
         assertThat(shown).hasSize(1)
-        assertThat(shown.single()).contains("Gradle 8.14", "Gradle 8.10")
+        assertThat(shown.single().content).contains("Gradle 8.14", "Gradle 8.10")
+    }
+
+    fun `test says as Error Prone when javac's warning limit cut it short, and how to get past it`() {
+        val shown = notifications()
+        val a = javaFile("A")
+
+        build(context(root = a.parentFile), a, warnings = JAVAC_MAX_WARNINGS)
+
+        val notification = shown.single()
+        assertThat(notification.title).isEqualTo("Error Prone")
+        assertThat(notification.content).contains(":compileJava")
+        assertThat(notification.actions.map { it.templateText }).containsExactly("Copy Gradle snippet")
+    }
+
+    fun `test writes the javac limit snippet for every project, in the build's own DSL`() {
+        val groovy = Files.createTempDirectory("errorprone-build").toFile()
+        val kotlin = Files.createTempDirectory("errorprone-build").toFile().also { File(it, "settings.gradle.kts").writeText("") }
+
+        // The task named is often a subproject's, and the root script is where people paste it.
+        assertThat(maxWarningsSnippet(groovy)).isEqualTo(
+            "allprojects { tasks.withType(JavaCompile).configureEach { options.compilerArgs.addAll(['-Xmaxwarns', '10000']) } }",
+        )
+        assertThat(maxWarningsSnippet(kotlin)).isEqualTo(
+            "allprojects { tasks.withType<JavaCompile>().configureEach { options.compilerArgs.addAll(listOf(\"-Xmaxwarns\", \"10000\")) } }",
+        )
+    }
+
+    /** The notifications shown from now on, as they are shown. */
+    private fun notifications(): List<Notification> = mutableListOf<Notification>().also { shown ->
+        project.messageBus.connect(testRootDisposable).subscribe(Notifications.TOPIC, object : Notifications {
+            override fun notify(notification: Notification) {
+                shown += notification
+            }
+        })
     }
 
     fun `test raises Gradle's problem threshold once, and only for task runs on a supported Gradle`() {
@@ -100,10 +129,10 @@ class ErrorProneGradleExtensionTest : ErrorProneLightTestCase() {
     }
 
     /**
-     * Runs one Gradle execution through the extension: `:compileJava` reports one diagnostic in [file]
-     * and finishes in full. Returns how many listeners the extension attached.
+     * Runs one Gradle execution through the extension: `:compileJava` reports [warnings] diagnostics in
+     * [file] and finishes in full. Returns how many listeners the extension attached.
      */
-    private fun build(context: GradleExecutionContext, file: File): Int {
+    private fun build(context: GradleExecutionContext, file: File, warnings: Int = 1): Int {
         val listeners = mutableListOf<ProgressListener>()
         val operation = Proxy.newProxyInstance(javaClass.classLoader, arrayOf(LongRunningOperation::class.java)) { proxy, method, args ->
             if (method.name == "addProgressListener" && args[0] is ProgressListener) listeners += args[0] as ProgressListener
@@ -112,7 +141,7 @@ class ErrorProneGradleExtensionTest : ErrorProneLightTestCase() {
 
         extension.configureOperation(operation, context)
         for (listener in listeners) {
-            listener.statusChanged(problem(file.path, ":compileJava"))
+            repeat(warnings) { listener.statusChanged(problem(file.path, ":compileJava")) }
             listener.statusChanged(finished(":compileJava"))
         }
         return listeners.size

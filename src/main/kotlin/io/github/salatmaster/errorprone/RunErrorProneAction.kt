@@ -55,6 +55,8 @@ internal val ERROR_PRONE_INIT_SCRIPT: String = errorProneInitScript()
  * incremental. doNotTrackState would say it in one line, but JavaCompile then fails with "Changes are
  * not tracked"; the Specs constants rather than closures keep the script usable with the
  * configuration cache. Task selection by name does not reach included builds; the README says so.
+ * Nothing here is an input of JavaCompile, so the next ordinary build finds the tasks up to date and
+ * keeps what this one reported; a compiler argument (javac's -Xmaxwarns, say) would recompile them all.
  *
  * With [patchChecks], Error Prone also writes the fixes of those checks into [patchDir], one patch
  * per compile task, and runs only those checks. That takes the net.ltgt.errorprone plugin: the flags
