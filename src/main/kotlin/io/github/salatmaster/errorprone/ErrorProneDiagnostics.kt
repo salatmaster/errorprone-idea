@@ -112,6 +112,11 @@ class ErrorProneDiagnostics(private val project: Project) : PersistentStateCompo
     @Volatile
     private var saved: Saved? = null
 
+    /** The task (the store's key for it) that last changed something, and when; null until a build does this session. */
+    @Volatile
+    var lastUpdate: Pair<String, Long>? = null
+        private set
+
     override fun getState(): Saved = Saved().apply {
         for ((task, entries) in byTask) {
             for (entry in entries.values) {
@@ -198,6 +203,7 @@ class ErrorProneDiagnostics(private val project: Project) : PersistentStateCompo
             }
             byTask = if (merged.isEmpty()) byTask - task else byTask + (task to merged)
         }
+        if (changed.isNotEmpty()) lastUpdate = task to now
         refresh(changed)
     }
 
@@ -252,6 +258,7 @@ class ErrorProneDiagnostics(private val project: Project) : PersistentStateCompo
     @TestOnly
     fun clear() {
         saved = null
+        lastUpdate = null
         synchronized(lock) {
             byTask.values.forEach { entries -> entries.values.forEach { entry -> entry.items.forEach { it.marker.dispose() } } }
             byTask = emptyMap()
