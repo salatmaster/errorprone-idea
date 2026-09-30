@@ -125,6 +125,12 @@ class ErrorProneDiagnosticTest {
     }
 
     @Test
+    fun `leaves escaped invisible characters escaped`() {
+        // A no-break space, a zero-width space and a byte order mark would vanish into the code.
+        assertThat(unescapeNonAscii("a\\u00a0b\\u200bc\\ufeffd\\u0441")).isEqualTo("a\\u00a0b\\u200bc\\ufeffdс")
+    }
+
+    @Test
     fun `text is the check and the message`() {
         assertThat(parse()!!.text).isEqualTo(label)
     }

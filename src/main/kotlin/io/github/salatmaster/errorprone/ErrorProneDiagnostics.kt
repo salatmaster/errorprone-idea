@@ -221,9 +221,12 @@ class ErrorProneDiagnostics(private val project: Project) : PersistentStateCompo
         project.messageBus.syncPublisher(TOPIC).diagnosticsChanged()
     }
 
-    /** The checks Error Prone has a fix for somewhere in the project. */
-    fun fixableChecks(): Set<String> =
-        byTask.values.flatMap { it.values }.flatMap { it.shown() }.filter { it.diagnostic.fixable }.map { it.diagnostic.check }.toSet()
+    /**
+     * Whether Error Prone has a fix for something in a file [accept]s. Stops at the first: toolbars ask
+     * this every half a second. Call in a read action.
+     */
+    fun hasFix(accept: (VirtualFile) -> Boolean): Boolean =
+        byTask.values.asSequence().flatMap { it.values }.any { entry -> entry.shown().any { it.diagnostic.fixable } && accept(entry.file) }
 
     /**
      * Hides the diagnostics at [markers] without waiting for a build, or with [dismissed] false shows

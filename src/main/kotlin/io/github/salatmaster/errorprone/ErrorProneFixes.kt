@@ -189,7 +189,8 @@ class ApplyAllErrorProneFixesAction(
         super.update(e)
         val project = e.project ?: return
         e.presentation.isVisible = GradleSettings.getInstance(project).linkedProjectsSettings.isNotEmpty()
-        e.presentation.isEnabled = e.presentation.isEnabled && ErrorProneDiagnostics.getInstance(project).fixableChecks().isNotEmpty()
+        // Not the base class's verdict, which is off while indexing: nothing here needs the indexes.
+        e.presentation.isEnabled = ErrorProneDiagnostics.getInstance(project).hasFix { !isGeneratedCode(project, it) }
     }
 
     /** Called on the EDT once the scope is chosen; a module or directory scope lists its files when first asked, so that happens off it. */

@@ -1,9 +1,12 @@
 package io.github.salatmaster.errorprone
 
 import com.intellij.analysis.AnalysisScope
+import com.intellij.openapi.actionSystem.impl.SimpleDataContext
 import com.intellij.openapi.application.runReadActionBlocking
 import com.intellij.openapi.vfs.VirtualFile
+import com.intellij.testFramework.DumbModeTestUtils
 import com.intellij.testFramework.PlatformTestUtil
+import com.intellij.testFramework.TestActionEvent
 import com.intellij.util.ui.EDT
 import org.assertj.core.api.Assertions.assertThat
 import java.util.Collections
@@ -48,6 +51,22 @@ class ApplyAllErrorProneFixesTest : ErrorProneLightTestCase() {
 
         PlatformTestUtil.waitWithEventsDispatching("the scope was never asked", { onEdt.isNotEmpty() }, 10)
         assertThat(onEdt).containsOnly(false)
+    }
+
+    fun `test is on while indexing, and off while only generated code has fixes`() {
+        val action = ApplyAllErrorProneFixesAction()
+        fun enabled() = runReadActionBlocking {
+            TestActionEvent.createTestEvent(action, SimpleDataContext.getProjectContext(project)).also(action::update).presentation.isEnabled
+        }
+        val generated = generatedFile("Gen.java", source)
+        store.commit("/shop|:compileJava", CompileOutcome.FULL, mapOf(generated to listOf(diagnostic(line = 2, column = 17, fixable = true, path = generated.path))))
+
+        assertThat(enabled()).isFalse()
+
+        val shop = myFixture.addFileToProject("Shop.java", source).virtualFile
+        store.commit("/shop|:compileTestJava", CompileOutcome.FULL, mapOf(shop to listOf(diagnostic(line = 2, column = 17, fixable = true, path = shop.path))))
+        // Nothing it does needs the indexes.
+        DumbModeTestUtils.runInDumbModeSynchronously(project) { assertThat(enabled()).isTrue() }
     }
 
     fun `test limits the fixes to the checks asked for`() {

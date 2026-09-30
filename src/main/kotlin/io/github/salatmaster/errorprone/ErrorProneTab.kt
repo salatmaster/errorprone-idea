@@ -9,19 +9,9 @@ import com.intellij.ide.DataManager
 import com.intellij.ide.DefaultTreeExpander
 import com.intellij.ide.util.PropertiesComponent
 import com.intellij.openapi.Disposable
-import com.intellij.openapi.actionSystem.ActionGroup
-import com.intellij.openapi.actionSystem.ActionManager
-import com.intellij.openapi.actionSystem.ActionUiKind
-import com.intellij.openapi.actionSystem.ActionUpdateThread
-import com.intellij.openapi.actionSystem.AnAction
-import com.intellij.openapi.actionSystem.AnActionEvent
-import com.intellij.openapi.actionSystem.CommonDataKeys
-import com.intellij.openapi.actionSystem.DataKey
-import com.intellij.openapi.actionSystem.DataSink
-import com.intellij.openapi.actionSystem.DefaultActionGroup
-import com.intellij.openapi.actionSystem.Separator
-import com.intellij.openapi.actionSystem.UiDataProvider
+import com.intellij.openapi.actionSystem.*
 import com.intellij.openapi.actionSystem.ex.ActionUtil
+import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.application.ModalityState
 import com.intellij.openapi.application.ReadAction
 import com.intellij.openapi.command.WriteCommandAction
@@ -38,16 +28,7 @@ import com.intellij.openapi.wm.ToolWindowManager
 import com.intellij.pom.Navigatable
 import com.intellij.psi.PsiDocumentManager
 import com.intellij.psi.PsiManager
-import com.intellij.ui.AutoScrollToSourceHandler
-import com.intellij.ui.ColorUtil
-import com.intellij.ui.ColoredTreeCellRenderer
-import com.intellij.ui.DocumentAdapter
-import com.intellij.ui.OnePixelSplitter
-import com.intellij.ui.PopupHandler
-import com.intellij.ui.ScrollPaneFactory
-import com.intellij.ui.SearchTextField
-import com.intellij.ui.SimpleTextAttributes
-import com.intellij.ui.TreeSpeedSearch
+import com.intellij.ui.*
 import com.intellij.ui.components.JBLabel
 import com.intellij.ui.components.JBTextArea
 import com.intellij.ui.dsl.builder.AlignX
@@ -63,15 +44,15 @@ import com.intellij.util.ui.NamedColorUtil
 import com.intellij.util.ui.UIUtil
 import com.intellij.util.ui.tree.TreeUtil
 import java.awt.BorderLayout
+import java.awt.Dimension
+import java.awt.Rectangle
 import java.awt.datatransfer.StringSelection
-import javax.swing.Icon
-import javax.swing.JComponent
-import javax.swing.JPanel
-import javax.swing.JTree
+import javax.swing.*
 import javax.swing.event.DocumentEvent
 import javax.swing.tree.DefaultMutableTreeNode
 import javax.swing.tree.DefaultTreeModel
 import javax.swing.tree.TreePath
+import javax.swing.tree.TreeSelectionModel
 
 /** The Error Prone tab of the Problems tool window; see [ErrorProneTab]. */
 class ErrorProneProblemsTabProvider(private val project: Project) : ProblemsViewPanelProvider {
@@ -88,7 +69,7 @@ private val SELECTED_NODE = DataKey.create<TabNode>("ErrorProne.TabNode")
  * takes any component that is a ProblemsViewTab.
  */
 internal class ErrorProneTab(private val project: Project) :
-    OnePixelSplitter(false, 0.6f), ProblemsViewTab, UiDataProvider, Disposable {
+    OnePixelSplitter(false, "ErrorProne.Tab.Splitter", 0.6f), ProblemsViewTab, UiDataProvider, Disposable {
 
     private val properties = PropertiesComponent.getInstance(project)
     private var view = loadView(properties)
@@ -99,13 +80,15 @@ internal class ErrorProneTab(private val project: Project) :
         isRootVisible = false
         showsRootHandles = true
         cellRenderer = TabRenderer()
+        // Every action acts on one diagnostic.
+        selectionModel.selectionMode = TreeSelectionModel.SINGLE_TREE_SELECTION
     }
     private val filter = SearchTextField(false)
     internal val status = JBLabel().apply {
         foreground = UIUtil.getContextHelpForeground()
         border = JBUI.Borders.empty(3, 8)
     }
-    internal val details = JPanel(BorderLayout())
+    internal val details: JPanel = WidthTrackingPanel()
     private val autoscroll = object : AutoScrollToSourceHandler() {
         override fun isAutoScrollMode() = view.autoscroll
         override fun setAutoScrollMode(state: Boolean) = change { it.copy(autoscroll = state) }
@@ -184,7 +167,8 @@ internal class ErrorProneTab(private val project: Project) :
             }
         }
         if (items.isEmpty()) {
-            tree.emptyText.text = "No Error Prone diagnostics yet"
+            // Before any build and after a clean one alike.
+            tree.emptyText.text = "No Error Prone diagnostics"
             tree.emptyText.appendLine("Run Error Prone", SimpleTextAttributes.LINK_PLAIN_ATTRIBUTES) { runErrorProne(project) }
         } else {
             tree.emptyText.text = "Nothing matches"
@@ -236,16 +220,16 @@ internal class ErrorProneTab(private val project: Project) :
                     }
                 }
                 row {
-                    if (canFix(item)) button("Apply Fix in File") { applyFixInFile(item) }
-                    if (diagnostic.fixable) button("Apply for This Check…") { applyForCheck(diagnostic.check) }
-                    button("Suppress") { suppress(item) }
+                    if (canFix(item)) button("Apply Fix in File") { locked { applyFixInFile(item) } }
+                    if (canFix(item)) button("Apply for This Check…") { locked { applyForCheck(diagnostic.check) } }
+                    button("Suppress") { locked { suppress(item) } }
                 }
                 diagnostic.link?.let { row { browserLink("Documentation", it) } }
             }
             is CheckNode -> {
                 heading(node.check, node.severity)
                 row { comment("${count(node.items.size, "diagnostic")} in ${count(node.files, "file")}") }
-                if (node.fixable) row { button("Apply for This Check…") { applyForCheck(node.check) } }
+                if (node.fixable) row { button("Apply for This Check…") { locked { applyForCheck(node.check) } } }
                 node.link?.let { row { browserLink("Documentation", it) } }
             }
             else -> row { comment("Select a diagnostic") }
@@ -259,6 +243,13 @@ internal class ErrorProneTab(private val project: Project) :
     }
 
     private fun canFix(item: TabItem) = item.diagnostic.fixable && !item.generated
+
+    /**
+     * A button's listener runs on the EDT without the lock that actions get from the action system, and
+     * what the buttons do reads PSI and documents. Application.invokeLater runs it under the write-intent
+     * lock (WriteIntentReadAction would too, but is experimental API).
+     */
+    private fun locked(run: () -> Unit) = ApplicationManager.getApplication().invokeLater(run)
 
     private fun applyFixInFile(item: TabItem) {
         ApplyErrorProneFix(item.diagnostic.check, item.located.task, item.file).invoke(project, null, null)
@@ -336,7 +327,7 @@ internal class ErrorProneTab(private val project: Project) :
     )
 
     private fun fixableCheckOf(node: TabNode?): String? = when (node) {
-        is ItemNode -> node.item.diagnostic.takeIf { it.fixable }?.check
+        is ItemNode -> node.item.takeIf(::canFix)?.diagnostic?.check
         is CheckNode -> node.check.takeIf { node.fixable }
         else -> null
     }
@@ -391,6 +382,16 @@ internal class ErrorProneTab(private val project: Project) :
     override fun dispose() {}
 }
 
+/** Takes the viewport's width, so the details wrap rather than scroll sideways. */
+private class WidthTrackingPanel : JPanel(BorderLayout()), Scrollable {
+    override fun getPreferredScrollableViewportSize(): Dimension = preferredSize
+    override fun getScrollableUnitIncrement(visible: Rectangle, orientation: Int, direction: Int) = JBUI.scale(16)
+    override fun getScrollableBlockIncrement(visible: Rectangle, orientation: Int, direction: Int) =
+        if (orientation == SwingConstants.VERTICAL) visible.height else visible.width
+    override fun getScrollableTracksViewportWidth() = true
+    override fun getScrollableTracksViewportHeight() = false
+}
+
 private val ErrorProneSeverity.label: String get() = name.lowercase().replaceFirstChar(Char::uppercase)
 
 private fun count(n: Int, noun: String) = "$n ${StringUtil.pluralize(noun, n)}"
@@ -406,7 +407,7 @@ internal class TabRenderer : ColoredTreeCellRenderer() {
                 if (node.fixable) append("  fixable", SimpleTextAttributes.GRAYED_ITALIC_ATTRIBUTES)
             }
             is FileNode -> {
-                icon = node.file.fileType.icon
+                icon = node.items.first().icon
                 append(node.file.name, if (node.generated) SimpleTextAttributes.GRAYED_ATTRIBUTES else SimpleTextAttributes.REGULAR_ATTRIBUTES)
                 node.module?.let { append("  $it", SimpleTextAttributes.GRAYED_ATTRIBUTES) }
                 if (node.generated) append("  generated", SimpleTextAttributes.GRAYED_ITALIC_ATTRIBUTES)
@@ -415,7 +416,8 @@ internal class TabRenderer : ColoredTreeCellRenderer() {
             is ItemNode -> {
                 // Grouped by file, no parent says how severe it is.
                 if (node.showCheck) icon = node.item.diagnostic.severity.icon
-                append("${node.item.line + 1}  ", SimpleTextAttributes.GRAYED_ATTRIBUTES)
+                // Where the code is now: an edit away from every diagnostic does not rebuild the tree.
+                append("${node.item.currentLine + 1}  ", SimpleTextAttributes.GRAYED_ATTRIBUTES)
                 if (node.showCheck) append("${node.item.diagnostic.check}  ", SimpleTextAttributes.REGULAR_BOLD_ATTRIBUTES)
                 append(node.item.diagnostic.message)
             }

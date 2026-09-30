@@ -2,6 +2,7 @@ package io.github.salatmaster.errorprone
 
 import com.intellij.codeHighlighting.HighlightDisplayLevel
 import com.intellij.ide.util.PropertiesComponent
+import com.intellij.openapi.editor.Document
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.roots.ProjectFileIndex
 import com.intellij.openapi.vfs.VirtualFile
@@ -42,9 +43,24 @@ internal fun saveView(properties: PropertiesComponent, view: TabView) {
     properties.setValue(PREFIX + "autoscroll", view.autoscroll, false)
 }
 
-/** One diagnostic as the tab shows it; [line] (0-based) is where its code was when the tab last read it. */
-internal class TabItem(val file: VirtualFile, val located: Located, val line: Int, val generated: Boolean, val module: String?) {
+/**
+ * One diagnostic as the tab shows it; [line] (0-based) is where its code was when the tab last read it.
+ * The [document] and the file's [icon] are read here, in a read action: the tree paints on the EDT
+ * without one, and a marker finds its document through FileDocumentManager, which needs it.
+ */
+internal class TabItem(
+    val file: VirtualFile,
+    val located: Located,
+    val document: Document,
+    val line: Int,
+    val generated: Boolean,
+    val module: String?,
+    val icon: Icon?,
+) {
     val diagnostic: ErrorProneDiagnostic get() = located.diagnostic
+
+    /** Where the code is now; the document's lines need no lock. */
+    val currentLine: Int get() = if (located.marker.isValid) document.getLineNumber(located.marker.startOffset) else line
 }
 
 /** Every diagnostic the store shows now. Call in a read action. */
@@ -54,7 +70,11 @@ internal fun collectItems(project: Project): List<TabItem> {
     return store.files().flatMap { file ->
         val generated = isGeneratedCode(project, file)
         val module = index.getModuleForFile(file)?.name
-        store.forFile(file).map { TabItem(file, it, it.marker.document.getLineNumber(it.range.startOffset), generated, module) }
+        val icon = file.fileType.icon
+        store.forFile(file).map {
+            val document = it.marker.document
+            TabItem(file, it, document, document.getLineNumber(it.range.startOffset), generated, module, icon)
+        }
     }
 }
 
@@ -66,7 +86,8 @@ internal sealed interface TabNode {
 internal class CheckNode(val check: String, val items: List<TabItem>) : TabNode {
     val severity: ErrorProneSeverity = items.minOf { it.diagnostic.severity }
     val files: Int = items.distinctBy { it.file }.size
-    val fixable: Boolean = items.any { it.diagnostic.fixable }
+    /** Error Prone has a fix for it somewhere but in generated code, where the next generation would undo it. */
+    val fixable: Boolean = items.any { it.diagnostic.fixable && !it.generated }
     val link: String? = items.firstNotNullOfOrNull { it.diagnostic.link }
     override val key: String get() = "check:$check"
     override fun toString() = check

@@ -12,7 +12,9 @@ import com.intellij.util.ui.UIUtil
 import com.intellij.util.ui.tree.TreeUtil
 import org.assertj.core.api.Assertions.assertThat
 import javax.swing.JButton
+import javax.swing.Scrollable
 import javax.swing.tree.DefaultMutableTreeNode
+import javax.swing.tree.TreeSelectionModel
 import kotlin.concurrent.thread
 
 class ErrorProneTabTest : ErrorProneLightTestCase() {
@@ -106,7 +108,7 @@ class ErrorProneTabTest : ErrorProneLightTestCase() {
     fun `test lists what the store has, follows it, and says when there is nothing`() {
         myFixture.configureByText("Many.java", source)
         val tab = tab()
-        waitFor { tab.tree.emptyText.text == "No Error Prone diagnostics yet" }
+        waitFor { tab.tree.emptyText.text == "No Error Prone diagnostics" }
 
         commit(CompileOutcome.FULL, diagnostic(line = 2, column = 17))
         waitFor { tab.tree.rowCount == 1 }
@@ -114,7 +116,7 @@ class ErrorProneTabTest : ErrorProneLightTestCase() {
 
         commit(CompileOutcome.FULL)
         waitFor { tab.tree.rowCount == 0 }
-        assertThat(tab.tree.emptyText.text).isEqualTo("No Error Prone diagnostics yet")
+        assertThat(tab.tree.emptyText.text).isEqualTo("No Error Prone diagnostics")
     }
 
     fun `test the selected diagnostic leads to its code as it is now, and offers what can be done`() {
@@ -142,7 +144,8 @@ class ErrorProneTabTest : ErrorProneLightTestCase() {
 
         buttons(tab).single { it.text == "Suppress" }.doClick()
 
-        assertThat(myFixture.editor.document.text).contains("SuppressWarnings(\"MissingOverride\")")
+        // Later, under the write-intent lock a button's listener does not have.
+        waitFor { "SuppressWarnings(\"MissingOverride\")" in myFixture.editor.document.text }
     }
 
     fun `test moves on to the next diagnostic once the selected one is dealt with`() {
@@ -192,6 +195,57 @@ class ErrorProneTabTest : ErrorProneLightTestCase() {
 
         assertThat(tab.tree.rowCount).isZero()
         assertThat(tab.tree.emptyText.text).isEqualTo("Nothing matches")
+    }
+
+    fun `test shows each diagnostic's line where its code is now`() {
+        myFixture.configureByText("Many.java", source)
+        commit(CompileOutcome.FULL, diagnostic(line = 2, column = 17))
+        val item = buildTree(items(), TabView()).child(0).child(0).child(0)
+
+        // Away from the diagnostic: nothing rebuilds the tree.
+        WriteCommandAction.runWriteCommandAction(project) { myFixture.editor.document.insertString(0, "// one\n") }
+        val rendered = TabRenderer().getTreeCellRendererComponent(Tree(), item, false, false, true, 0, false) as ColoredTreeCellRenderer
+
+        assertThat(rendered.getCharSequence(false).toString()).startsWith("3 ")
+    }
+
+    fun `test draws every node without the read lock, as the EDT paints them`() {
+        myFixture.configureByText("Many.java", source)
+        commit(CompileOutcome.FULL, diagnostic(line = 2, column = 17))
+        val nodes = TreeUtil.treeNodeTraverser(buildTree(items(), TabView())).toList().drop(1)
+
+        // The test body holds the write-intent lock; the IDE's EDT paints without any.
+        var failure: Throwable? = null
+        thread {
+            try {
+                for (node in nodes) TabRenderer().getTreeCellRendererComponent(Tree(), node, false, true, false, 0, false)
+            } catch (e: Throwable) {
+                failure = e
+            }
+        }.join(30_000)
+
+        assertThat(failure).isNull()
+    }
+
+    fun `test counts no fix in generated code, which the next generation would undo`() {
+        myFixture.configureByText("Many.java", source)
+        val generated = generatedFile("Gen.java", source)
+        store.commit(
+            ":compileTestJava",
+            CompileOutcome.FULL,
+            mapOf(generated to listOf(diagnostic(line = 2, column = 17, check = "UnusedVariable", fixable = true, path = generated.path))),
+        )
+
+        assertThat((buildTree(items(), TabView()).child(0).userObject as CheckNode).fixable).isFalse()
+    }
+
+    fun `test selects one diagnostic at a time and wraps its details to the pane`() {
+        val tab = tab()
+
+        // Every action acts on one diagnostic.
+        assertThat(tab.tree.selectionModel.selectionMode).isEqualTo(TreeSelectionModel.SINGLE_TREE_SELECTION)
+        // A long "Did you mean" wraps rather than scrolling sideways.
+        assertThat((tab.details as Scrollable).scrollableTracksViewportWidth).isTrue()
     }
 
     fun `test follows a build reported from the Gradle event thread`() {

@@ -96,8 +96,16 @@ internal fun unescapeNonAscii(text: String, kept: Set<String> = emptySet()): Str
     UNICODE_ESCAPE.replace(text) { match ->
         val hex = match.groupValues[2]
         val char = hex.toInt(16).toChar()
-        if (char.code < 0x80 || char.isSurrogate() || hex.lowercase() in kept) match.value else match.groupValues[1] + char
+        if (char.code < 0x80 || !char.isVisible() || hex.lowercase() in kept) match.value else match.groupValues[1] + char
     }
+
+/** Written out, it shows: not a space (a no-break one included), a control, a format character (a zero-width space, a byte order mark) or a half of a pair. */
+private fun Char.isVisible(): Boolean =
+    !isWhitespace() && Character.getType(this).toByte() !in INVISIBLE
+
+private val INVISIBLE = setOf(
+    Character.CONTROL, Character.FORMAT, Character.SURROGATE, Character.PRIVATE_USE, Character.UNASSIGNED,
+)
 
 private const val TAB_WIDTH = 8
 
