@@ -6,6 +6,8 @@ All notable changes to this plugin are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.1.0] - 2026-09-30
+
 ### Added
 
 - Error Prone diagnostics from Gradle builds run in the IDE are underlined in the editor, on the
@@ -25,3 +27,6 @@ All notable changes to this plugin are documented here. The format follows
   so fixed warnings go without a Build. On by default, in Settings | Tools | Error Prone.
 - A diagnostic whose line was deleted, commented out or rewritten is hidden at once instead of
   sliding onto the next line's code.
+
+[unreleased]: https://github.com/salatmaster/errorprone-idea/compare/v0.1.0...HEAD
+[0.1.0]: https://github.com/salatmaster/errorprone-idea/releases/tag/v0.1.0
