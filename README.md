@@ -110,19 +110,19 @@ IDE at all. <kbd>Build</kbd> → <kbd>Run Error Prone</kbd> compiles everything 
 <details>
 <summary><b>It says javac stopped at 100 warnings.</b></summary>
 
-javac reports at most 100 warnings per compile task. The notification copies the line that raises the
-limit, in your build's DSL, for the root build script. The plugin does not add it itself: a compiler
-argument that differs between IDE and terminal builds would make every switch between them recompile
-everything.
+javac reports at most 100 warnings per compile task. *Show How…* in the notification shows what raises
+the limit, in Groovy or Kotlin, and which of the build's scripts apply Error Prone, where it goes. The
+plugin does not add it itself: a compiler argument that differs between IDE and terminal builds would
+make every switch between them recompile everything.
 </details>
 
 <details>
 <summary><b>How do I turn a check off, or make it an error?</b></summary>
 
 In the build, where Error Prone's configuration lives: the plugin never edits build scripts. Right-click
-the check in the Error Prone tab and choose *Copy Gradle Line That Turns the Check Off* (or *Makes the
-Check an Error*), then paste it into the root build script; it is written in the build's DSL. To silence
-one place instead, suppress it with <kbd>Alt+Enter</kbd>.
+the check in the Error Prone tab and choose *Change Severity in Gradle…*. It shows what to add, in Groovy
+or Kotlin, and links the build's scripts that apply Error Prone, where it goes. To silence one place
+instead, suppress it with <kbd>Alt+Enter</kbd>.
 </details>
 
 <details>

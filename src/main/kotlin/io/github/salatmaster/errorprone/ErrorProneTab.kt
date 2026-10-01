@@ -531,29 +531,18 @@ internal class ErrorProneTab(private val project: Project) :
         nodeAction("Suppress All…", { itemsOf(it)?.takeIf { items -> items.any { item -> !item.generated } } }, ::suppressShown),
         Separator.getInstance(),
         nodeAction("Open Documentation", ::linkOf) { BrowserUtil.browse(it) },
-        nodeAction("Copy Gradle Line That Turns the Check Off", { it.takeIf { node -> node is CheckNode || node is ItemNode } }) { copyGradleLine("disable") },
-        nodeAction("Copy Gradle Line That Makes the Check an Error", { it.takeIf { node -> node is CheckNode || node is ItemNode } }) { copyGradleLine("error") },
+        nodeAction("Change Severity in Gradle…", { gradleCheck() }) { (root, check) -> showGradleSnippet(project, root, GradleChange.Severity(check)) },
         nodeAction("Copy Message", { (it as? ItemNode)?.item?.diagnostic?.text }) { CopyPasteManager.getInstance().setContents(StringSelection(it)) },
     )
 
-    /**
-     * Copies what sets the selected check's [severity] in the build that reported it (`disable` or `error`),
-     * and says where it goes. The plugin never edits a build script itself.
-     */
-    internal fun copyGradleLine(severity: String) {
+    /** The build that reported the selected check, and the check: what Change Severity in Gradle changes. */
+    internal fun gradleCheck(): Pair<File, String>? {
         val item = when (val node = selectedNode()) {
             is ItemNode -> node.item
             is CheckNode -> node.items.first()
-            else -> return
+            else -> return null
         }
-        val check = item.diagnostic.check
-        CopyPasteManager.getInstance().setContents(StringSelection(checkSeveritySnippet(File(item.located.task.substringBeforeLast('|')), severity, check)))
-        val what = if (severity == "disable") "turns '$check' off" else "makes '$check' an error, which fails a build wherever it is found"
-        notifyErrorProne(
-            project,
-            "Copied the line that $what, for the build's root script. The next build recompiles every Java source set in full.",
-            NotificationType.INFORMATION,
-        )
+        return File(item.located.task.substringBeforeLast('|')) to item.diagnostic.check
     }
 
     private fun itemsOf(node: TabNode?): List<TabItem>? = when (node) {

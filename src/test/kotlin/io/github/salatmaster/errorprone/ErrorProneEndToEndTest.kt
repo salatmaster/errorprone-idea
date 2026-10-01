@@ -222,13 +222,38 @@ class ErrorProneEndToEndTest {
     }
 
     @Test
-    fun `the copied line that disables a check works where it is pasted`() {
-        dir.resolve("build.gradle.kts").toFile().appendText("\n" + checkSeveritySnippet(dir.toFile(), "disable", "MissingOverride") + "\n")
+    fun `the snippets that turn a check off work in the script that applies Error Prone, in either DSL`() {
+        val script = dir.resolve("build.gradle.kts").toFile()
+        assertThat(scriptsApplyingErrorProne(dir.toFile())).containsExactly(script, dir.resolve("lib/build.gradle.kts").toFile())
+        paste(checkSeveritySnippet(Dsl.KOTLIN, Level.OFF, "MissingOverride"), script)
+        // A Groovy script the Kotlin one applies: options.errorprone resolves at run time there.
+        dir.resolve("severity.gradle").toFile().writeText(checkSeveritySnippet(Dsl.GROOVY, Level.OFF, "DefaultCharset"))
+        script.appendText("\napply(from = \"severity.gradle\")\n")
 
         val run = build("compileJava")
 
         assertThat(run.failed).describedAs(run.output).isFalse()
-        assertThat(run.of(":compileJava").own.map { it.check }).isNotEmpty().doesNotContain("MissingOverride")
+        assertThat(run.of(":compileJava").own.map { it.check }).isNotEmpty().doesNotContain("MissingOverride", "DefaultCharset")
+    }
+
+    @Test
+    fun `the snippet that raises javac's warning limit lets every warning through`() {
+        val many = (0 until 110).joinToString("\n") { "  static class D$it { public String toString() { return \"\"; } }" }
+        dir.resolve("src/main/java/demo/Lots.java").toFile().writeText("package demo;\n\npublic class Lots {\n$many\n}\n")
+        paste(maxWarningsSnippet(Dsl.KOTLIN), dir.resolve("build.gradle.kts").toFile())
+
+        val run = build("compileJava")
+
+        assertThat(run.failed).describedAs(run.output).isFalse()
+        assertThat(run.of(":compileJava").diagnostics.size).isGreaterThan(110)
+        assertThat(run.javacLimited).isEmpty()
+    }
+
+    /** Adds [snippet] to the Kotlin [script] as its explanation says: imports at the top, the rest at the end. */
+    private fun paste(snippet: String, script: File) {
+        val (imports, body) = snippet.lines().partition { it.startsWith("import ") }
+        val text = script.readText()
+        script.writeText((imports.filter { it !in text.lines() } + text + body).joinToString("\n"))
     }
 
     @Test

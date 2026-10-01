@@ -303,16 +303,18 @@ class ErrorProneTabTest : ErrorProneLightTestCase() {
         assertThat(text.split("SuppressWarnings(\"MissingOverride\")")).hasSize(3)
     }
 
-    fun `test copies the Gradle line that turns the selected check off`() {
+    fun `test changes the selected check's severity in the build that reported it`() {
         myFixture.configureByText("Many.java", source)
         val tab = tab()
-        commit(CompileOutcome.FULL, diagnostic(line = 2, column = 17))
+        val root = tempDir()
+        store.commit("${root.path}|:app:compileJava", CompileOutcome.FULL, mapOf(myFixture.file.virtualFile to listOf(diagnostic(line = 2, column = 17))))
         waitFor { tab.tree.rowCount == 1 }
+
         tab.tree.setSelectionRow(0)
-
-        tab.copyGradleLine("disable")
-
-        assertThat(CopyPasteManager.getInstance().getContents<String>(DataFlavor.stringFlavor)).contains("disable('MissingOverride')")
+        assertThat(tab.gradleCheck()).isEqualTo(root to "MissingOverride")
+        TreeUtil.expandAll(tab.tree)
+        tab.tree.setSelectionRow(2)
+        assertThat(tab.gradleCheck()).isEqualTo(root to "MissingOverride")
     }
 
     fun `test leaves alone what no declaration holds, and says so`() {
