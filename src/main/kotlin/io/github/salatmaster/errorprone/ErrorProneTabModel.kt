@@ -1,11 +1,22 @@
 package io.github.salatmaster.errorprone
 
 import com.intellij.codeHighlighting.HighlightDisplayLevel
+import com.intellij.compiler.CompilerConfiguration
 import com.intellij.ide.util.PropertiesComponent
 import com.intellij.openapi.editor.Document
+import com.intellij.openapi.module.ModuleManager
 import com.intellij.openapi.project.Project
+import com.intellij.openapi.project.guessProjectDir
 import com.intellij.openapi.roots.ProjectFileIndex
+import com.intellij.openapi.vcs.FileStatus
+import com.intellij.openapi.vcs.changes.ChangeListManager
+import com.intellij.openapi.vcs.impl.LineStatusTrackerManager
+import com.intellij.openapi.vfs.VfsUtilCore
 import com.intellij.openapi.vfs.VirtualFile
+import com.intellij.util.text.DateFormatUtil
+import org.gradle.util.GradleVersion
+import org.jetbrains.plugins.gradle.settings.GradleProjectSettings
+import org.jetbrains.plugins.gradle.settings.GradleSettings
 import javax.swing.Icon
 import javax.swing.tree.DefaultMutableTreeNode
 
@@ -19,11 +30,13 @@ internal data class TabView(
     val generated: Boolean = true,
     val autoscroll: Boolean = false,
     val filter: String = "",
+    /** Only what is on lines version control sees changed: what the next commit brings in. */
+    val changedOnly: Boolean = false,
 ) {
     fun shows(item: TabItem): Boolean {
         val text = filter.trim()
-        return item.diagnostic.severity in severities && (generated || !item.generated) &&
-            (text.isEmpty() || listOf(item.diagnostic.check, item.diagnostic.message, item.file.name).any { it.contains(text, ignoreCase = true) })
+        return item.diagnostic.severity in severities && (generated || !item.generated) && (!changedOnly || item.changed) &&
+            (text.isEmpty() || listOfNotNull(item.diagnostic.check, item.diagnostic.message, item.file.name, item.pkg, item.module).any { it.contains(text, ignoreCase = true) })
     }
 }
 
@@ -34,6 +47,7 @@ internal fun loadView(properties: PropertiesComponent) = TabView(
     severities = ErrorProneSeverity.entries.filterTo(HashSet()) { properties.getBoolean(PREFIX + it.name, true) },
     generated = properties.getBoolean(PREFIX + "generated", true),
     autoscroll = properties.getBoolean(PREFIX + "autoscroll", false),
+    changedOnly = properties.getBoolean(PREFIX + "changedOnly", false),
 )
 
 internal fun saveView(properties: PropertiesComponent, view: TabView) {
@@ -41,14 +55,17 @@ internal fun saveView(properties: PropertiesComponent, view: TabView) {
     ErrorProneSeverity.entries.forEach { properties.setValue(PREFIX + it.name, it in view.severities, true) }
     properties.setValue(PREFIX + "generated", view.generated, true)
     properties.setValue(PREFIX + "autoscroll", view.autoscroll, false)
+    properties.setValue(PREFIX + "changedOnly", view.changedOnly, false)
 }
 
 /**
  * One diagnostic as the tab shows it; [line] (0-based) is where its code was when the tab last read it.
  * The [document] and the file's [icon] are read here, in a read action: the tree paints on the EDT
- * without one, and a marker finds its document through FileDocumentManager, which needs it.
+ * without one, and a marker finds its document through FileDocumentManager, which needs it. [pkg] is the
+ * file's directory under its source root, dotted as a package; [path] is the file's path from the project
+ * directory. [changed] says whether version control sees its line changed.
  */
-internal class TabItem(
+internal data class TabItem(
     val file: VirtualFile,
     val located: Located,
     val document: Document,
@@ -56,6 +73,9 @@ internal class TabItem(
     val generated: Boolean,
     val module: String?,
     val icon: Icon?,
+    val pkg: String = "",
+    val path: String = file.path,
+    val changed: Boolean = false,
 ) {
     val diagnostic: ErrorProneDiagnostic get() = located.diagnostic
 
@@ -67,15 +87,48 @@ internal class TabItem(
 internal fun collectItems(project: Project): List<TabItem> {
     val store = ErrorProneDiagnostics.getInstance(project)
     val index = ProjectFileIndex.getInstance(project)
+    val projectDir = project.guessProjectDir()
     return store.files().flatMap { file ->
         val generated = isGeneratedCode(project, file)
         val module = index.getModuleForFile(file)?.name
         val icon = file.fileType.icon
-        store.forFile(file).map {
-            val document = it.marker.document
-            TabItem(file, it, document, document.getLineNumber(it.range.startOffset), generated, module, icon)
+        val pkg = index.getSourceRootForFile(file)?.let { VfsUtilCore.getRelativePath(file.parent, it, '.') }.orEmpty()
+        val path = projectDir?.let { VfsUtilCore.getRelativePath(file, it) } ?: file.path
+        val located = store.forFile(file)
+        val document = located.firstOrNull()?.marker?.document ?: return@flatMap emptyList()
+        val changed = changedLines(project, file, document)
+        located.map {
+            val line = document.getLineNumber(it.range.startOffset)
+            TabItem(file, it, document, line, generated, module, icon, pkg, path, changed(line))
         }
     }
+}
+
+/**
+ * Which lines (0-based) of [file] differ from what version control has, as its line status tracker says.
+ * A file version control sees added counts whole. A changed file has a tracker only while someone asks
+ * for one, an editor or [requestTrackers]; until then none of its lines counts. Call in a read action.
+ */
+internal fun changedLines(project: Project, file: VirtualFile, document: Document): (Int) -> Boolean {
+    val tracker = LineStatusTrackerManager.getInstance(project).getLineStatusTracker(document)
+    if (tracker != null && tracker.isOperational()) return tracker::isLineModified
+    val whole = ChangeListManager.getInstance(project).getStatus(file) in setOf(FileStatus.ADDED, FileStatus.UNKNOWN)
+    return { whole }
+}
+
+/**
+ * Has version control make line status trackers for [documents] on behalf of [requester], which
+ * [releaseTrackers] lets go of, and calls [then] once they have read their base revisions. On the EDT.
+ */
+internal fun requestTrackers(project: Project, documents: Collection<Document>, requester: Any, then: () -> Unit) {
+    val trackers = LineStatusTrackerManager.getInstance(project)
+    documents.forEach { trackers.requestTrackerFor(it, requester) }
+    trackers.invokeAfterUpdate(then)
+}
+
+internal fun releaseTrackers(project: Project, documents: Collection<Document>, requester: Any) {
+    val trackers = LineStatusTrackerManager.getInstance(project)
+    documents.forEach { trackers.releaseTrackerFor(it, requester) }
 }
 
 /** What a node of the tab's tree stands for; [key] tells the same node apart across rebuilds. */
@@ -86,8 +139,8 @@ internal sealed interface TabNode {
 internal class CheckNode(val check: String, val items: List<TabItem>) : TabNode {
     val severity: ErrorProneSeverity = items.minOf { it.diagnostic.severity }
     val files: Int = items.distinctBy { it.file }.size
-    /** Error Prone has a fix for it somewhere but in generated code, where the next generation would undo it. */
-    val fixable: Boolean = items.any { it.diagnostic.fixable && !it.generated }
+    /** What Error Prone has a fix for, generated code aside, where the next generation would undo it. */
+    val fixable: List<TabItem> = items.filter { it.diagnostic.fixable && !it.generated }
     val link: String? = items.firstNotNullOfOrNull { it.diagnostic.link }
     override val key: String get() = "check:$check"
     override fun toString() = check
@@ -138,3 +191,61 @@ internal val ErrorProneSeverity.icon: Icon
         ErrorProneSeverity.WARNING -> HighlightDisplayLevel.WARNING.icon
         ErrorProneSeverity.NOTE -> HighlightDisplayLevel.WEAK_WARNING.icon
     }
+
+/**
+ * What the project's setup says about where diagnostics could come from: whether a Gradle build is
+ * [linked], whether the last sync found Error Prone in any module's compiler settings, the oldest
+ * [gradle] a linked build uses, and whether Build Project goes through Gradle for any of them.
+ */
+internal data class Setup(val linked: Boolean, val errorProne: Boolean, val gradle: GradleVersion?, val delegated: Boolean)
+
+/**
+ * Reads [Setup] from the settings the last sync imported, with no build. Error Prone shows in a module's
+ * javac options (`-Xplugin:ErrorProne`) and its annotation processor path. Call off the EDT, in a read
+ * action: the Gradle version may be read from the wrapper's properties.
+ */
+internal fun setupOf(project: Project): Setup {
+    val linked = GradleSettings.getInstance(project).linkedProjectsSettings
+    val compiler = CompilerConfiguration.getInstance(project)
+    val errorProne = ModuleManager.getInstance(project).modules.any { module ->
+        compiler.getAdditionalOptions(module).any { "-Xplugin:ErrorProne" in it } ||
+            "error_prone_core" in compiler.getAnnotationProcessingConfiguration(module).processorPath
+    }
+    return Setup(
+        linked = linked.isNotEmpty(),
+        errorProne = errorProne,
+        gradle = linked.mapNotNull { it.resolveGradleVersion() }.minOrNull(),
+        delegated = linked.any { GradleProjectSettings.isDelegatedBuildEnabled(project, it.externalProjectPath) },
+    )
+}
+
+internal enum class EmptyAction { RUN, GETTING_STARTED }
+
+/** What the Error Prone tab says when it has nothing to show, and the one thing to do about it. */
+internal data class EmptyState(val text: String, val action: EmptyAction? = null)
+
+/**
+ * Why there is nothing to show, the first reason that applies: the setup first, then what the compile
+ * tasks' last runs this session ([records]) came to.
+ */
+internal fun emptyState(setup: Setup, records: Collection<TaskRecord>): EmptyState = when {
+    !setup.linked && setup.errorProne -> EmptyState("Error Prone runs in this project's build, but only Gradle builds are read")
+    !setup.linked -> EmptyState("No Gradle build is linked to this project")
+    setup.gradle != null && setup.gradle < ErrorProneGradleExtension.MIN_GRADLE_VERSION -> EmptyState(
+        "This project builds with Gradle ${setup.gradle.version}; Error Prone diagnostics need " +
+            "Gradle ${ErrorProneGradleExtension.MIN_GRADLE_VERSION.version} or newer",
+    )
+    !setup.errorProne -> EmptyState("The last Gradle sync found no Error Prone in this build", EmptyAction.GETTING_STARTED)
+    records.any { it.outcome == CompileOutcome.FAILED } ->
+        EmptyState("A compile failed, and Error Prone reports nothing once javac finds an error")
+    // One task's incremental compile leaves its other files unchecked, however fully another task compiled.
+    records.any { it.outcome == CompileOutcome.PARTIAL } ->
+        EmptyState("Some compiles were incremental, which report only on the files they recompile", EmptyAction.RUN)
+    records.any { it.outcome == CompileOutcome.FULL } -> EmptyState(
+        "Error Prone found nothing in the last full compile, at " +
+            DateFormatUtil.formatTime(records.filter { it.outcome == CompileOutcome.FULL }.maxOf { it.at }),
+    )
+    !setup.delegated -> EmptyState("Build Project uses IntelliJ IDEA's own builder here, which reports nothing to this plugin", EmptyAction.RUN)
+    records.isEmpty() -> EmptyState("No compile has run since the IDE started", EmptyAction.RUN)
+    else -> EmptyState("Every compile since the IDE started was up to date, and reported nothing", EmptyAction.RUN)
+}

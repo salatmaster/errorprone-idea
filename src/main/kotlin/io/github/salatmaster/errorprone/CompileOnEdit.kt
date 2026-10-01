@@ -1,5 +1,6 @@
 package io.github.salatmaster.errorprone
 
+import com.intellij.ide.highlighter.JavaFileType
 import com.intellij.openapi.application.EDT
 import com.intellij.openapi.application.readAction
 import com.intellij.openapi.components.Service
@@ -18,6 +19,7 @@ import com.intellij.openapi.project.Project
 import com.intellij.openapi.project.ProjectManager
 import com.intellij.openapi.roots.ProjectFileIndex
 import com.intellij.openapi.util.TextRange
+import com.intellij.openapi.util.text.StringUtil
 import com.intellij.openapi.vfs.VirtualFile
 import com.intellij.platform.ide.progress.withBackgroundProgress
 import com.intellij.problems.WolfTheProblemSolver
@@ -47,22 +49,24 @@ import kotlin.time.Duration.Companion.seconds
  * Hears every edit and acts on those near an Error Prone diagnostic: on its line, or in the method,
  * field or initializer that holds it, where a fix often goes (an @Override above, a missing case
  * below). Such an edit may hide diagnostics or show them again (their line changed, see
- * ErrorProneDiagnostics), and has the file recompiled while [ErrorProneSettings.compileOnEdit] is on.
- * Once a file is due, every edit in it counts: the typing that started it goes on past its line.
+ * ErrorProneDiagnostics), and has the file recompiled while [ErrorProneSettings.compileOnEdit] is on;
+ * with [ErrorProneSettings.compileOnAnyEdit], any edit of Java code in a source root does. Once a file is
+ * due, every edit in it counts: the typing that started it goes on past its line.
  */
 class ErrorProneEditListener : DocumentListener {
     override fun beforeDocumentChange(event: DocumentEvent) {
         val file = FileDocumentManager.getInstance().getFile(event.document) ?: return
+        val settings = ErrorProneSettings.getInstance()
         for (project in ProjectManager.getInstance().openProjects) {
             if (project.isDisposed) continue
-            val store = project.serviceIfCreated<ErrorProneDiagnostics>() ?: continue
-            val markers = store.markersIn(file)
-            if (markers.isEmpty()) continue
+            val markers = project.serviceIfCreated<ErrorProneDiagnostics>()?.markersIn(file).orEmpty()
             val near = markers.any { zoneOf(project, it).intersects(event.offset, event.offset + event.oldLength) }
-            if (near) store.editedNear()
-            if (!ErrorProneSettings.getInstance().compileOnEdit) continue
-            val compile = CompileOnEdit.getInstance(project)
-            if (near || file in compile.pending) compile.schedule(listOf(file))
+            if (near) ErrorProneDiagnostics.getInstance(project).editedNear()
+            if (!settings.compileOnEdit) continue
+            val compile = project.serviceIfCreated<CompileOnEdit>()
+            val anywhere = settings.compileOnAnyEdit && file.fileType == JavaFileType.INSTANCE &&
+                ProjectFileIndex.getInstance(project).isInSourceContent(file)
+            if (near || anywhere || (compile != null && file in compile.pending)) CompileOnEdit.getInstance(project).schedule(listOf(file))
         }
     }
 }
@@ -100,9 +104,7 @@ internal class CompileOnEdit(private val project: Project, scope: CoroutineScope
         @OptIn(FlowPreview::class)
         scope.launch {
             edits.debounce(QUIET).collect {
-                // ponytail: waits out any Gradle task of the project, a long-running one (bootRun) too;
-                // telling a compile from the rest is the upgrade if that bites.
-                while (isGradleBusy()) delay(QUIET)
+                waitForGradle()
                 compile()
             }
         }
@@ -113,12 +115,38 @@ internal class CompileOnEdit(private val project: Project, scope: CoroutineScope
         edits.tryEmit(Unit)
     }
 
+    /**
+     * What recompiling the edited code waits for, if anything, as the Error Prone tab says it: the status
+     * bar has no room for it while it shows the navigation bar, as it does by default.
+     */
+    @Volatile
+    var waiting: String? = null
+        private set
+
+    fun waitingFor(text: String?) {
+        if (text == waiting) return
+        waiting = text
+        project.messageBus.syncPublisher(ErrorProneDiagnostics.TOPIC).diagnosticsChanged()
+    }
+
+    /** Waits for the project's other Gradle builds to end, saying so. */
+    // ponytail: waits out any Gradle task of the project, a running application or its tests too; telling
+    // a compile from the rest is the upgrade if that bites.
+    private suspend fun waitForGradle() {
+        if (!isGradleBusy()) return
+        waitingFor("Edited code recompiles once the running Gradle build ends")
+        while (isGradleBusy()) delay(QUIET)
+        waitingFor(null)
+    }
+
     private suspend fun compile() {
         val files = pending.toList()
         pending -= files.toSet()
         val ready = readAction { compilable(files.filter { it.isValid }) }
         // Still pending, so the edit that fixes them brings them back here.
-        pending += files.filter { it.isValid && it !in ready }
+        val held = files.filter { it.isValid && it !in ready }
+        pending += held
+        waitingFor(if (held.isEmpty()) null else heldBackText(held))
         val tasks = readAction { ready.mapNotNull { compileTaskOf(it) } }
         if (tasks.isEmpty()) return
         withContext(Dispatchers.EDT) {
@@ -185,6 +213,15 @@ internal class CompileOnEdit(private val project: Project, scope: CoroutineScope
         fun getInstance(project: Project): CompileOnEdit = project.service()
     }
 }
+
+/** What the status bar says of edited [files] that wait for their modules to compile again. */
+/** What the Error Prone tab says of edited [files] that wait for their modules to compile again. */
+internal fun heldBackText(files: List<VirtualFile>): String =
+    if (files.size == 1) {
+        "${files[0].name} recompiles once its module has no errors"
+    } else {
+        "${files[0].name} and ${files.size - 1} more ${StringUtil.pluralize("file", files.size - 1)} recompile once their modules have no errors"
+    }
 
 /** The task compiling the Java code of [sourceSet], as Gradle names it for a plain name. */
 internal fun compileTaskName(sourceSet: String): String =

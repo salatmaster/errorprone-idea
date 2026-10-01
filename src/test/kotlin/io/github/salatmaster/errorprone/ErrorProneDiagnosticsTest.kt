@@ -3,10 +3,10 @@ package io.github.salatmaster.errorprone
 import com.intellij.openapi.application.WriteAction
 import com.intellij.openapi.command.WriteCommandAction
 import com.intellij.openapi.vfs.LocalFileSystem
+import com.intellij.psi.impl.PsiManagerEx
 import com.intellij.util.xmlb.XmlSerializer
 import org.assertj.core.api.Assertions.assertThat
 import java.io.File
-import java.nio.file.Files
 import kotlin.concurrent.thread
 
 class ErrorProneDiagnosticsTest : ErrorProneLightTestCase() {
@@ -37,7 +37,7 @@ class ErrorProneDiagnosticsTest : ErrorProneLightTestCase() {
     fun `test a commit from the Gradle event thread takes the locks it needs itself`() {
         // A file on disk that no editor has open, as most files a build reports on are: its PSI is
         // created fresh, so nothing has cached its document yet.
-        val onDisk = File(Files.createTempDirectory("errorprone").toFile(), "Many.java").apply { writeText(source) }
+        val onDisk = File(tempDir(), "Many.java").apply { writeText(source) }
         val file = LocalFileSystem.getInstance().refreshAndFindFileByIoFile(onDisk)!!
         val diagnostic = ErrorProneDiagnostic(onDisk.path, 2, 17, 0, "MissingOverride", ErrorProneSeverity.WARNING, "m", null, null)
 
@@ -54,6 +54,18 @@ class ErrorProneDiagnosticsTest : ErrorProneLightTestCase() {
         }.join(30_000)
 
         assertThat(failure).isNull()
+        assertThat(store.forFile(file)).hasSize(1)
+    }
+
+    fun `test a build re-highlights the files open in an editor, and leaves the others be`() {
+        myFixture.configureByText("Many.java", source)
+        val closed = File(tempDir(), "Closed.java").apply { writeText(source) }
+        val file = LocalFileSystem.getInstance().refreshAndFindFileByIoFile(closed)!!
+
+        store.commit(":compileJava", CompileOutcome.FULL, mapOf(file to listOf(diagnostic(line = 2, column = 17, path = closed.path))))
+
+        // Its PSI would be made only to be re-highlighted, and nothing shows it.
+        assertThat(PsiManagerEx.getInstanceEx(project).fileManager.getCachedPsiFile(file)).isNull()
         assertThat(store.forFile(file)).hasSize(1)
     }
 
@@ -150,6 +162,32 @@ class ErrorProneDiagnosticsTest : ErrorProneLightTestCase() {
         val (task, time) = store.lastUpdate!!
         assertThat(task).isEqualTo(":compileJava")
         assertThat(time).isGreaterThanOrEqualTo(before)
+    }
+
+    fun `test records how each compile task's last run ended, even one that changed nothing`() {
+        myFixture.configureByText("Many.java", source)
+        commit(CompileOutcome.FULL, diagnostic(line = 2, column = 17))
+        store.commit(":processResources", CompileOutcome.FULL, emptyMap())
+
+        commit(CompileOutcome.FAILED)
+        store.capped(":compileJava")
+
+        assertThat(store.records().keys).containsExactly(":compileJava")
+        val record = store.records().getValue(":compileJava")
+        assertThat(record.outcome).isEqualTo(CompileOutcome.FAILED)
+        assertThat(record.capped).isTrue()
+        // A failed compile's silence proves nothing: what the task reported before still shows, older.
+        assertThat(store.forFile(myFixture.file.virtualFile).single().reported!!).isLessThan(record.at)
+    }
+
+    fun `test a diagnostic knows when it was reported, unless it is from the last session`() {
+        myFixture.configureByText("Many.java", source)
+        commit(CompileOutcome.FULL, diagnostic(line = 2, column = 17))
+        assertThat(store.forFile(myFixture.file.virtualFile).single().reported).isNotNull()
+
+        restart()
+
+        assertThat(store.forFile(myFixture.file.virtualFile).single().reported).isNull()
     }
 
     fun `test a task that never reported anything changes nothing`() {

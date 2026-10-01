@@ -1,13 +1,18 @@
 package io.github.salatmaster.errorprone
 
+import com.intellij.analysis.AnalysisScope
 import com.intellij.analysis.problemsView.toolWindow.ProblemsViewPanelProvider
 import com.intellij.analysis.problemsView.toolWindow.ProblemsViewTab
 import com.intellij.icons.AllIcons
 import com.intellij.ide.BrowserUtil
 import com.intellij.ide.CommonActionsManager
+import com.intellij.ide.CopyProvider
 import com.intellij.ide.DataManager
 import com.intellij.ide.DefaultTreeExpander
+import com.intellij.ide.OccurenceNavigator
+import com.intellij.ide.OccurenceNavigatorSupport
 import com.intellij.ide.util.PropertiesComponent
+import com.intellij.notification.NotificationType
 import com.intellij.openapi.Disposable
 import com.intellij.openapi.actionSystem.*
 import com.intellij.openapi.actionSystem.ex.ActionUtil
@@ -15,20 +20,29 @@ import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.application.ModalityState
 import com.intellij.openapi.application.ReadAction
 import com.intellij.openapi.command.WriteCommandAction
+import com.intellij.openapi.components.serviceIfCreated
+import com.intellij.openapi.editor.Document
 import com.intellij.openapi.editor.ex.util.EditorUtil
 import com.intellij.openapi.fileEditor.OpenFileDescriptor
 import com.intellij.openapi.ide.CopyPasteManager
+import com.intellij.openapi.keymap.KeymapUtil
 import com.intellij.openapi.project.DumbAwareAction
 import com.intellij.openapi.project.DumbAwareToggleAction
 import com.intellij.openapi.project.Project
+import com.intellij.openapi.ui.Messages
 import com.intellij.openapi.ui.SimpleToolWindowPanel
+import com.intellij.openapi.ui.popup.JBPopupFactory
 import com.intellij.openapi.util.text.StringUtil
+import com.intellij.openapi.vcs.FileStatus
+import com.intellij.openapi.vcs.changes.ChangeListManager
+import com.intellij.openapi.vcs.impl.LineStatusTrackerManager
 import com.intellij.openapi.wm.ToolWindowId
 import com.intellij.openapi.wm.ToolWindowManager
 import com.intellij.pom.Navigatable
 import com.intellij.psi.PsiDocumentManager
 import com.intellij.psi.PsiManager
 import com.intellij.ui.*
+import com.intellij.ui.awt.RelativePoint
 import com.intellij.ui.components.JBLabel
 import com.intellij.ui.components.JBTextArea
 import com.intellij.ui.dsl.builder.AlignX
@@ -45,8 +59,10 @@ import com.intellij.util.ui.UIUtil
 import com.intellij.util.ui.tree.TreeUtil
 import java.awt.BorderLayout
 import java.awt.Dimension
+import java.awt.Point
 import java.awt.Rectangle
 import java.awt.datatransfer.StringSelection
+import java.io.File
 import javax.swing.*
 import javax.swing.event.DocumentEvent
 import javax.swing.tree.DefaultMutableTreeNode
@@ -59,6 +75,8 @@ class ErrorProneProblemsTabProvider(private val project: Project) : ProblemsView
     override fun create(): ProblemsViewTab = ErrorProneTab(project)
 }
 
+private const val GETTING_STARTED_URL = "https://github.com/salatmaster/errorprone-idea#getting-started"
+
 /** The node the Error Prone tab has selected, for its context menu. */
 private val SELECTED_NODE = DataKey.create<TabNode>("ErrorProne.TabNode")
 
@@ -69,11 +87,17 @@ private val SELECTED_NODE = DataKey.create<TabNode>("ErrorProne.TabNode")
  * takes any component that is a ProblemsViewTab.
  */
 internal class ErrorProneTab(private val project: Project) :
-    OnePixelSplitter(false, "ErrorProne.Tab.Splitter", 0.6f), ProblemsViewTab, UiDataProvider, Disposable {
+    OnePixelSplitter(false, "ErrorProne.Tab.Splitter", 0.6f), ProblemsViewTab, UiDataProvider, OccurenceNavigator, Disposable {
 
     private val properties = PropertiesComponent.getInstance(project)
     private var view = loadView(properties)
     private var items: List<TabItem> = emptyList()
+
+    /** Why there is nothing to show, read with [items] when there is not. */
+    private var empty = EmptyState("")
+
+    /** The documents this tab has version control track lines of, for Changed Lines Only. On the EDT. */
+    private val tracked = HashSet<Document>()
 
     private val model = DefaultTreeModel(DefaultMutableTreeNode())
     internal val tree = Tree(model).apply {
@@ -94,12 +118,27 @@ internal class ErrorProneTab(private val project: Project) :
         override fun setAutoScrollMode(state: Boolean) = change { it.copy(autoscroll = state) }
     }
 
+    /** Next and Previous Occurrence, from the tab or from the editor, step through the diagnostics. */
+    private val occurrences = object : OccurenceNavigatorSupport(tree) {
+        override fun createDescriptorForNode(node: DefaultMutableTreeNode): Navigatable? =
+            (node.userObject as? ItemNode)?.item?.let(::descriptorOf)
+
+        override fun getNextOccurenceActionName() = "Next Error Prone Diagnostic"
+
+        override fun getPreviousOccurenceActionName() = "Previous Error Prone Diagnostic"
+    }
+
+    private val contextActions = contextActions()
+
     init {
         TreeSpeedSearch.installOn(tree)
         EditSourceOnDoubleClickHandler.install(tree)
         EditSourceOnEnterKeyHandler.install(tree)
         autoscroll.install(tree)
-        PopupHandler.installPopupMenu(tree, contextActions(), "ErrorProneTabPopup")
+        PopupHandler.installPopupMenu(tree, contextActions, "ErrorProneTabPopup")
+        // Alt+Enter, as in the editor: what can be done with the selection.
+        DumbAwareAction.create { showContextPopup() }
+            .registerCustomShortcutSet(KeymapUtil.getActiveKeymapShortcuts(IdeActions.ACTION_SHOW_INTENTION_ACTIONS), tree, this)
         tree.addTreeSelectionListener { showDetails() }
         filter.addDocumentListener(object : DocumentAdapter() {
             override fun textChanged(e: DocumentEvent) {
@@ -127,11 +166,16 @@ internal class ErrorProneTab(private val project: Project) :
      * (the Gradle event thread, an edit) and often, hence coalesced.
      */
     fun refresh() {
-        ReadAction.nonBlocking<List<TabItem>> { collectItems(project) }
+        ReadAction.nonBlocking<Pair<List<TabItem>, EmptyState?>> {
+            val items = collectItems(project)
+            items to if (items.isEmpty()) emptyState(setupOf(project), ErrorProneDiagnostics.getInstance(project).records().values) else null
+        }
             .expireWith(this)
             .coalesceBy(this)
-            .finishOnUiThread(ModalityState.any()) {
-                items = it
+            .finishOnUiThread(ModalityState.any()) { (items, empty) ->
+                this.items = items
+                empty?.let { this.empty = it }
+                if (view.changedOnly) trackChanges()
                 rebuild()
             }
             .submit(AppExecutorUtil.getAppExecutorService())
@@ -159,17 +203,50 @@ internal class ErrorProneTab(private val project: Project) :
             tree.setSelectionRow(selectedRow.coerceIn(0, tree.rowCount - 1))
         }
         val shown = items.filter(view::shows)
+        val store = ErrorProneDiagnostics.getInstance(project)
+        val failed = store.records().filterValues { it.outcome == CompileOutcome.FAILED }
+        val capped = store.records().filterValues { it.capped }
+        val builds = ErrorProneBuilds.getInstance(project)
+        val run = builds.lastRun
+        val update = store.lastUpdate
+        status.icon = if (builds.running) AnimatedIcon.Default.INSTANCE else null
         status.text = buildString {
+            if (builds.running) append("Running Error Prone… · ")
+            project.serviceIfCreated<CompileOnEdit>()?.waiting?.let { append(it).append(" · ") }
             append(if (shown.size == items.size) count(items.size, "diagnostic") else "${shown.size} of ${count(items.size, "diagnostic")}")
             append(" · ").append(count(shown.distinctBy { it.diagnostic.check }.size, "check"))
-            ErrorProneDiagnostics.getInstance(project).lastUpdate?.let { (task, time) ->
-                append(" · updated by ${task.substringAfterLast('|')} at ${DateFormatUtil.formatTime(time)}")
+            if (run != null && (update == null || run.at >= update.second)) {
+                append(" · Run Error Prone at ${DateFormatUtil.formatTime(run.at)}: ")
+                append(
+                    when {
+                        run.after < run.before -> "${run.before - run.after} fewer than before"
+                        run.after > run.before -> "${run.after - run.before} more than before"
+                        else -> "as many as before"
+                    }
+                )
+            } else if (update != null) {
+                append(" · updated by ${update.first.substringAfterLast('|')} at ${DateFormatUtil.formatTime(update.second)}")
             }
+            if (failed.isNotEmpty()) append(" · ${count(failed.size, "compile")} failed")
+            if (capped.isNotEmpty()) append(" · ${count(capped.size, "task")} at javac's limit")
         }
+        // What the exceptions are about, which the line has no room for.
+        status.toolTipText = (
+            failed.map { (task, record) ->
+                "${task.substringAfterLast('|')} failed at ${DateFormatUtil.formatTime(record.at)}: Error Prone reports nothing once " +
+                    "javac finds an error, so what it reported there before may be out of date."
+            } + capped.map { (task, _) ->
+                "javac stopped at $JAVAC_MAX_WARNINGS warnings in ${task.substringAfterLast('|')}, so some of Error Prone's findings there are missing."
+            }
+        ).takeIf { it.isNotEmpty() }?.joinToString("<br>", "<html>", "</html>") { StringUtil.escapeXmlEntities(it) }
         if (items.isEmpty()) {
-            // Before any build and after a clean one alike.
-            tree.emptyText.text = "No Error Prone diagnostics"
-            tree.emptyText.appendLine("Run Error Prone", SimpleTextAttributes.LINK_PLAIN_ATTRIBUTES) { runErrorProne(project) }
+            tree.emptyText.text = empty.text
+            when (empty.action) {
+                EmptyAction.RUN -> tree.emptyText.appendLine("Run Error Prone", SimpleTextAttributes.LINK_PLAIN_ATTRIBUTES) { locked { runErrorProne(project) } }
+                EmptyAction.GETTING_STARTED ->
+                    tree.emptyText.appendLine("How to add it", SimpleTextAttributes.LINK_PLAIN_ATTRIBUTES) { BrowserUtil.browse(GETTING_STARTED_URL) }
+                null -> {}
+            }
         } else {
             tree.emptyText.text = "Nothing matches"
             tree.emptyText.appendLine("Clear filter", SimpleTextAttributes.LINK_PLAIN_ATTRIBUTES) {
@@ -183,11 +260,39 @@ internal class ErrorProneTab(private val project: Project) :
         showDetails()
     }
 
+    /** What the next commit brings in: the diagnostics on changed lines, for now, not remembered. */
+    fun showChangedOnly() {
+        view = view.copy(changedOnly = true)
+        trackChanges()
+        rebuild()
+    }
+
     /** Changes what the tab shows, remembers it for the project, and shows it. */
     private fun change(update: (TabView) -> TabView) {
         view = update(view).copy(filter = filter.text)
         saveView(properties, view)
+        if (view.changedOnly) trackChanges() else untrackChanges()
         rebuild()
+    }
+
+    /**
+     * Has version control track the lines of the changed files shown that no editor has open, which it
+     * otherwise does not, and shows the tab again once it knows them.
+     */
+    private fun trackChanges() {
+        val changes = ChangeListManager.getInstance(project)
+        val trackers = LineStatusTrackerManager.getInstance(project)
+        val fresh = items.asSequence().distinctBy { it.file }
+            .filter { changes.getStatus(it.file) == FileStatus.MODIFIED && trackers.getLineStatusTracker(it.document) == null }
+            .map { it.document }
+            .filter(tracked::add)
+            .toList()
+        if (fresh.isNotEmpty()) requestTrackers(project, fresh, this) { refresh() }
+    }
+
+    private fun untrackChanges() {
+        releaseTrackers(project, tracked, this)
+        tracked.clear()
     }
 
     private fun keyOf(path: TreePath): String =
@@ -209,28 +314,44 @@ internal class ErrorProneTab(private val project: Project) :
                 val diagnostic = item.diagnostic
                 heading(diagnostic.check, diagnostic.severity)
                 row { text(StringUtil.escapeXmlEntities(diagnostic.message)) }
-                diagnostic.suggestion?.let { suggestion ->
-                    row { label("Did you mean") }
+                diagnostic.fixes.forEachIndexed { i, fix ->
+                    row { label(if (i == 0) "Did you mean" else "Or") }
                     row {
-                        cell(JBTextArea(suggestion).apply {
-                            isEditable = false
-                            lineWrap = true
-                            font = EditorUtil.getEditorFont()
-                        }).align(AlignX.FILL)
+                        if (fix.isEmpty()) {
+                            label("Remove this line")
+                        } else {
+                            cell(JBTextArea(fix).apply {
+                                isEditable = false
+                                lineWrap = true
+                                font = EditorUtil.getEditorFont()
+                            }).align(AlignX.FILL)
+                        }
                     }
                 }
+                if (diagnostic.fixes.size > 1 && canFix(item)) row { comment("Apply Fix writes the first.") }
                 row {
                     if (canFix(item)) button("Apply Fix in File") { locked { applyFixInFile(item) } }
                     if (canFix(item)) button("Apply for This Check…") { locked { applyForCheck(diagnostic.check) } }
                     button("Suppress") { locked { suppress(item) } }
                 }
                 diagnostic.link?.let { row { browserLink("Documentation", it) } }
+                row { comment(StringUtil.escapeXmlEntities(freshnessOf(item.located, ErrorProneDiagnostics.getInstance(project).records()) + ".")) }
             }
             is CheckNode -> {
                 heading(node.check, node.severity)
                 row { comment("${count(node.items.size, "diagnostic")} in ${count(node.files, "file")}") }
-                if (node.fixable) row { button("Apply for This Check…") { locked { applyForCheck(node.check) } } }
+                nodeButtons(node.items)
                 node.link?.let { row { browserLink("Documentation", it) } }
+            }
+            is FileNode -> {
+                row {
+                    icon(node.items.first().icon ?: AllIcons.FileTypes.Any_type)
+                    label(node.file.name).bold()
+                }
+                for ((check, items) in node.items.groupBy { it.diagnostic.check }) {
+                    row { label(check); comment(count(items.size, "diagnostic")) }
+                }
+                nodeButtons(node.items)
             }
             else -> row { comment("Select a diagnostic") }
         }
@@ -244,6 +365,50 @@ internal class ErrorProneTab(private val project: Project) :
 
     private fun canFix(item: TabItem) = item.diagnostic.fixable && !item.generated
 
+    /** What can be done with every diagnostic under a node, as the tab shows them. */
+    private fun Panel.nodeButtons(items: List<TabItem>) = row {
+        val fixable = items.filter(::canFix)
+        if (fixable.isNotEmpty()) {
+            val files = fixable.distinctBy { it.file }.size
+            button("Apply Fixes in ${count(files, "File")}") { locked { applyShown(items) } }
+        }
+        val suppressible = items.filterNot { it.generated }
+        if (suppressible.isNotEmpty()) button("Suppress All ${suppressible.size}…") { locked { suppressShown(items) } }
+    }
+
+    /**
+     * Error Prone's fixes for [items], in their files, without asking for a scope: the tab has chosen it.
+     * Error Prone fixes a check in a whole file at once, so a file shown for one diagnostic is fixed in full.
+     */
+    private fun applyShown(items: List<TabItem>) {
+        val fixable = items.filter(::canFix)
+        if (fixable.isEmpty()) return
+        ApplyAllErrorProneFixesAction(fixable.mapTo(HashSet()) { it.diagnostic.check })
+            .analyze(project, AnalysisScope(project, fixable.map { it.file }.distinct()))
+    }
+
+    /** Suppresses [items] after saying how many, generated code aside, where the next generation would drop it. */
+    private fun suppressShown(items: List<TabItem>) {
+        val targets = items.filterNot { it.generated }
+        val files = targets.distinctBy { it.file }.size
+        val answer = Messages.showOkCancelDialog(
+            project,
+            "Add @SuppressWarnings for ${count(targets.size, "diagnostic")} in ${count(files, "file")}? Each goes on the " +
+                "narrowest declaration around it.",
+            "Suppress All", "Suppress", Messages.getCancelButton(), Messages.getQuestionIcon(),
+        )
+        if (answer == Messages.OK) leftAlone(suppressAll(project, targets.map { it.file to it.located }))
+    }
+
+    private fun leftAlone(count: Int) {
+        if (count == 0) return
+        val text = if (count == 1) "1 diagnostic was left as it is" else "$count diagnostics were left as they are"
+        notifyErrorProne(
+            project, "$text: outside any declaration (on an import, say), where @SuppressWarnings cannot go.",
+            NotificationType.INFORMATION,
+        )
+    }
+
     /**
      * A button's listener runs on the EDT without the lock that actions get from the action system, and
      * what the buttons do reads PSI and documents. Application.invokeLater runs it under the write-intent
@@ -252,7 +417,7 @@ internal class ErrorProneTab(private val project: Project) :
     private fun locked(run: () -> Unit) = ApplicationManager.getApplication().invokeLater(run)
 
     private fun applyFixInFile(item: TabItem) {
-        ApplyErrorProneFix(item.diagnostic.check, item.located.task, item.file).invoke(project, null, null)
+        ApplyErrorProneFix(item.located, item.file).invoke(project, null, null)
     }
 
     private fun applyForCheck(check: String) {
@@ -265,10 +430,19 @@ internal class ErrorProneTab(private val project: Project) :
     private fun suppress(item: TabItem) {
         val psi = PsiManager.getInstance(project).findFile(item.file) ?: return
         PsiDocumentManager.getInstance(project).commitAllDocuments()
+        if (suppressionTargets(psi, item.located.marker.startOffset).isEmpty()) return leftAlone(1)
         val check = item.diagnostic.check
         WriteCommandAction.runWriteCommandAction(project, "Suppress '$check'", null, {
             SuppressErrorProneFix(check, item.located.marker).invoke(project, null, psi)
         }, psi)
+    }
+
+    private fun showContextPopup() {
+        val context = DataManager.getInstance().getDataContext(tree)
+        val popup = JBPopupFactory.getInstance()
+            .createActionGroupPopup(null, contextActions, context, JBPopupFactory.ActionSelectionAid.SPEEDSEARCH, true)
+        val row = tree.selectionPath?.let(tree::getPathBounds)
+        if (row != null) popup.show(RelativePoint(tree, Point(row.x, row.y + row.height))) else popup.showInCenterOf(tree)
     }
 
     override fun uiDataSnapshot(sink: DataSink) {
@@ -276,14 +450,43 @@ internal class ErrorProneTab(private val project: Project) :
         sink[SELECTED_NODE] = node
         sink[CommonDataKeys.VIRTUAL_FILE] = (node as? ItemNode)?.item?.file ?: (node as? FileNode)?.file
         sink[CommonDataKeys.NAVIGATABLE] = navigatable()
+        sink[PlatformDataKeys.COPY_PROVIDER] = copyProvider
     }
 
     /** Where the selection's code is now, which its marker knows, not where it was at the last rebuild. */
     internal fun navigatable(): Navigatable? = when (val node = selectedNode()) {
-        is ItemNode -> node.item.located.marker.takeIf { it.isValid }?.let { OpenFileDescriptor(project, node.item.file, it.startOffset) }
+        is ItemNode -> descriptorOf(node.item)
         is FileNode -> OpenFileDescriptor(project, node.file)
         else -> null
     }
+
+    private fun descriptorOf(item: TabItem): OpenFileDescriptor? =
+        item.located.marker.takeIf { it.isValid }?.let { OpenFileDescriptor(project, item.file, it.startOffset) }
+
+    /** Every diagnostic under the selection, a line each: where it is, its check and its message. */
+    internal fun copyText(): String? {
+        val selected = tree.selectionPath?.lastPathComponent as? DefaultMutableTreeNode ?: return null
+        return TreeUtil.treeNodeTraverser(selected).preOrderDfsTraversal()
+            .mapNotNull { ((it as DefaultMutableTreeNode).userObject as? ItemNode)?.item }
+            .joinToString("\n") { "${it.path}:${it.currentLine + 1}: ${it.diagnostic.text}" }
+            .ifEmpty { null }
+    }
+
+    private val copyProvider = object : CopyProvider {
+        override fun getActionUpdateThread() = ActionUpdateThread.EDT
+        override fun performCopy(dataContext: DataContext) {
+            copyText()?.let { CopyPasteManager.getInstance().setContents(StringSelection(it)) }
+        }
+        override fun isCopyEnabled(dataContext: DataContext) = tree.selectionPath != null
+        override fun isCopyVisible(dataContext: DataContext) = true
+    }
+
+    override fun hasNextOccurence() = occurrences.hasNextOccurence()
+    override fun hasPreviousOccurence() = occurrences.hasPreviousOccurence()
+    override fun goNextOccurence(): OccurenceNavigator.OccurenceInfo? = occurrences.goNextOccurence()
+    override fun goPreviousOccurence(): OccurenceNavigator.OccurenceInfo? = occurrences.goPreviousOccurence()
+    override fun getNextOccurenceActionName(): String = occurrences.nextOccurenceActionName
+    override fun getPreviousOccurenceActionName(): String = occurrences.previousOccurenceActionName
 
     private fun toolbarActions(): ActionGroup {
         val actions = ActionManager.getInstance()
@@ -308,8 +511,11 @@ internal class ErrorProneTab(private val project: Project) :
                     }.toTypedArray(),
                     Separator.getInstance(),
                     toggle("Generated Code", null, { view.generated }) { on -> change { it.copy(generated = on) } },
+                    toggle("Changed Lines Only", null, { view.changedOnly }) { on -> change { it.copy(changedOnly = on) } },
                 ),
                 Separator.getInstance(),
+                common.createPrevOccurenceAction(this),
+                common.createNextOccurenceAction(this),
                 common.createExpandAllAction(expander, tree),
                 common.createCollapseAllAction(expander, tree),
                 autoscroll.createToggleAction(),
@@ -319,16 +525,40 @@ internal class ErrorProneTab(private val project: Project) :
 
     private fun contextActions() = DefaultActionGroup(
         nodeAction("Apply Fix in File", { (it as? ItemNode)?.item?.takeIf(::canFix) }, ::applyFixInFile),
-        nodeAction("Apply for This Check…", ::fixableCheckOf, ::applyForCheck),
+        nodeAction("Apply for This Check…", { (it as? ItemNode)?.item?.takeIf(::canFix)?.diagnostic?.check }, ::applyForCheck),
+        nodeAction("Apply Fixes", { itemsOf(it)?.takeIf { items -> items.any(::canFix) } }, ::applyShown),
         nodeAction("Suppress", { (it as? ItemNode)?.item }, ::suppress),
+        nodeAction("Suppress All…", { itemsOf(it)?.takeIf { items -> items.any { item -> !item.generated } } }, ::suppressShown),
         Separator.getInstance(),
         nodeAction("Open Documentation", ::linkOf) { BrowserUtil.browse(it) },
+        nodeAction("Copy Gradle Line That Turns the Check Off", { it.takeIf { node -> node is CheckNode || node is ItemNode } }) { copyGradleLine("disable") },
+        nodeAction("Copy Gradle Line That Makes the Check an Error", { it.takeIf { node -> node is CheckNode || node is ItemNode } }) { copyGradleLine("error") },
         nodeAction("Copy Message", { (it as? ItemNode)?.item?.diagnostic?.text }) { CopyPasteManager.getInstance().setContents(StringSelection(it)) },
     )
 
-    private fun fixableCheckOf(node: TabNode?): String? = when (node) {
-        is ItemNode -> node.item.takeIf(::canFix)?.diagnostic?.check
-        is CheckNode -> node.check.takeIf { node.fixable }
+    /**
+     * Copies what sets the selected check's [severity] in the build that reported it (`disable` or `error`),
+     * and says where it goes. The plugin never edits a build script itself.
+     */
+    internal fun copyGradleLine(severity: String) {
+        val item = when (val node = selectedNode()) {
+            is ItemNode -> node.item
+            is CheckNode -> node.items.first()
+            else -> return
+        }
+        val check = item.diagnostic.check
+        CopyPasteManager.getInstance().setContents(StringSelection(checkSeveritySnippet(File(item.located.task.substringBeforeLast('|')), severity, check)))
+        val what = if (severity == "disable") "turns '$check' off" else "makes '$check' an error, which fails a build wherever it is found"
+        notifyErrorProne(
+            project,
+            "Copied the line that $what, for the build's root script. The next build recompiles every Java source set in full.",
+            NotificationType.INFORMATION,
+        )
+    }
+
+    private fun itemsOf(node: TabNode?): List<TabItem>? = when (node) {
+        is CheckNode -> node.items
+        is FileNode -> node.items
         else -> null
     }
 
@@ -379,7 +609,7 @@ internal class ErrorProneTab(private val project: Project) :
     }
 
     /** The tab's content disposes of it, as it does of any Disposable component. */
-    override fun dispose() {}
+    override fun dispose() = untrackChanges()
 }
 
 /** Takes the viewport's width, so the details wrap rather than scroll sideways. */
@@ -404,11 +634,15 @@ internal class TabRenderer : ColoredTreeCellRenderer() {
                 append(node.check, SimpleTextAttributes.REGULAR_BOLD_ATTRIBUTES)
                 append("  ${node.items.size}", SimpleTextAttributes.GRAYED_ATTRIBUTES)
                 if (node.files > 1) append(" · ${node.files} files", SimpleTextAttributes.GRAYED_ATTRIBUTES)
-                if (node.fixable) append("  fixable", SimpleTextAttributes.GRAYED_ITALIC_ATTRIBUTES)
+                if (node.fixable.isNotEmpty()) {
+                    append("  ${if (node.fixable.size == node.items.size) "fixable" else "${node.fixable.size} of ${node.items.size} fixable"}", SimpleTextAttributes.GRAYED_ITALIC_ATTRIBUTES)
+                }
             }
             is FileNode -> {
                 icon = node.items.first().icon
                 append(node.file.name, if (node.generated) SimpleTextAttributes.GRAYED_ATTRIBUTES else SimpleTextAttributes.REGULAR_ATTRIBUTES)
+                // Three Util.java apart.
+                node.items.first().pkg.takeIf { it.isNotEmpty() }?.let { append("  $it", SimpleTextAttributes.GRAYED_ATTRIBUTES) }
                 node.module?.let { append("  $it", SimpleTextAttributes.GRAYED_ATTRIBUTES) }
                 if (node.generated) append("  generated", SimpleTextAttributes.GRAYED_ITALIC_ATTRIBUTES)
                 if (!expanded) append("  ${node.items.size}", SimpleTextAttributes.GRAYED_ATTRIBUTES)

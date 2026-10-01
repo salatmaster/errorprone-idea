@@ -1,9 +1,13 @@
 package io.github.salatmaster.errorprone
 
 import com.intellij.analysis.AnalysisScope
+import com.intellij.application.options.CodeStyle
 import com.intellij.openapi.actionSystem.impl.SimpleDataContext
 import com.intellij.openapi.application.runReadActionBlocking
 import com.intellij.openapi.vfs.VirtualFile
+import com.intellij.psi.codeStyle.JavaCodeStyleSettings
+import com.intellij.psi.codeStyle.PackageEntry
+import com.intellij.psi.codeStyle.PackageEntryTable
 import com.intellij.testFramework.DumbModeTestUtils
 import com.intellij.testFramework.PlatformTestUtil
 import com.intellij.testFramework.TestActionEvent
@@ -14,6 +18,23 @@ import java.util.Collections
 class ApplyAllErrorProneFixesTest : ErrorProneLightTestCase() {
 
     private val source = "class Many {\n  public String toString() { return \"\"; }\n}\n"
+
+    fun `test has Error Prone lay out imports as the project's code style does`() {
+        // IntelliJ's default: others, then java and javax, then static imports.
+        assertThat(patchImportOrder(project)).isEqualTo("idea")
+
+        val googleStyle = CodeStyle.createTestSettings(CodeStyle.getSettings(project))
+        googleStyle.getCustomSettings(JavaCodeStyleSettings::class.java).IMPORT_LAYOUT_TABLE.copyFrom(
+            PackageEntryTable().apply {
+                addEntry(PackageEntry.ALL_OTHER_STATIC_IMPORTS_ENTRY)
+                addEntry(PackageEntry.BLANK_LINE_ENTRY)
+                addEntry(PackageEntry.ALL_OTHER_IMPORTS_ENTRY)
+            }
+        )
+        CodeStyle.doWithTemporarySettings(project, googleStyle, Runnable {
+            assertThat(patchImportOrder(project)).isEqualTo("static-first")
+        })
+    }
 
     fun `test runs, per build, the tasks that reported fixable diagnostics in scope, generated code aside`() {
         val shop = myFixture.addFileToProject("Shop.java", source).virtualFile

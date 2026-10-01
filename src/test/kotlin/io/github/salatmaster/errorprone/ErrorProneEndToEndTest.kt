@@ -222,6 +222,16 @@ class ErrorProneEndToEndTest {
     }
 
     @Test
+    fun `the copied line that disables a check works where it is pasted`() {
+        dir.resolve("build.gradle.kts").toFile().appendText("\n" + checkSeveritySnippet(dir.toFile(), "disable", "MissingOverride") + "\n")
+
+        val run = build("compileJava")
+
+        assertThat(run.failed).describedAs(run.output).isFalse()
+        assertThat(run.of(":compileJava").own.map { it.check }).isNotEmpty().doesNotContain("MissingOverride")
+    }
+
+    @Test
     fun `says when javac stopped reporting at its warning limit`() {
         // javac hands at most 100 warnings per compilation to Gradle (-Xmaxwarns), silently.
         val many = (0 until 110).joinToString("\n") { "  static class D$it { public String toString() { return \"\"; } }" }
@@ -264,6 +274,58 @@ class ErrorProneEndToEndTest {
         assertThat(sources.filter { (file, text) -> file.readText() != text }.keys).isEmpty()
     }
 
+    private fun patchesIn(patchDir: Path) =
+        patchDir.toFile().walkTopDown().filter { it.name == "error-prone.patch" }
+            .joinToString("") { rebasePatch(it.readText(), it.parentFile.toPath(), dir.toRealPath()) }
+
+    @Test
+    fun `a fix build compiles in full only the tasks it fixes`() {
+        // Everything up to date, the included build too, as after any build in the IDE.
+        build("compileJava")
+        val patchDir = Files.createDirectories(dir.resolve("patches")).toRealPath()
+        val script = errorProneInitScript(listOf("MissingOverride", "StringCaseLocaleUsage"), patchDir, targets = listOf(":compileJava"))
+
+        val run = build(":compileJava", arguments = listOf("--init-script", initScript(script)))
+
+        assertThat(run.failed).describedAs(run.output).isFalse()
+        assertThat(run.of(":compileJava").outcome).isEqualTo(CompileOutcome.FULL)
+        // The included build it depends on stays up to date rather than recompiling in full.
+        assertThat(run.commits.filter { it.task != ":compileJava" && it.task.endsWith("compileJava") }.map { it.outcome })
+            .containsOnly(CompileOutcome.NONE)
+        assertThat(patchesIn(patchDir)).contains("Customer.java").doesNotContain("Slugs.java")
+    }
+
+    @Test
+    fun `a fix build reaches a task of an included build by its path in the build tree`() {
+        val patchDir = Files.createDirectories(dir.resolve("patches")).toRealPath()
+        val script = errorProneInitScript(listOf("StringCaseLocaleUsage"), patchDir, targets = listOf(":lib:compileJava"))
+
+        val run = build(":lib:compileJava", arguments = listOf("--init-script", initScript(script)))
+
+        assertThat(run.failed).describedAs(run.output).isFalse()
+        assertThat(patchesIn(patchDir)).contains("lib/src/main/java/lib/Slugs.java")
+    }
+
+    @Test
+    fun `a fix that adds an import keeps the file's import order`() {
+        // IntelliJ's layout: static imports last. Error Prone's own default puts them first, and a fix that
+        // adds an import reprints the whole block.
+        dir.resolve("src/main/java/demo/Imports.java").toFile().writeText(
+            "package demo;\n\nimport java.util.List;\n\nimport static java.util.Objects.requireNonNull;\n\n" +
+                "public class Imports {\n  String first(List<String> s) { return requireNonNull(s).get(0).toUpperCase(); }\n}\n"
+        )
+        val patchDir = Files.createDirectories(dir.resolve("patches")).toRealPath()
+        val script = errorProneInitScript(patchChecks = listOf("StringCaseLocaleUsage"), patchDir = patchDir, importOrder = "idea")
+
+        val run = build(ERROR_PRONE_TASK, arguments = listOf("--init-script", initScript(script)))
+
+        assertThat(run.failed).describedAs(run.output).isFalse()
+        val patch = patchDir.toFile().walkTopDown().filter { it.name == "error-prone.patch" }
+            .map { rebasePatch(it.readText(), it.parentFile.toPath(), dir.toRealPath()) { file -> file.fileName.toString() == "Imports.java" } }
+            .joinToString("")
+        assertThat(patch).contains("+import java.util.Locale;").doesNotContain("-import")
+    }
+
     @Test
     fun `the Run Error Prone init script recompiles every source set in full`() {
         // Leaves everything up to date, which a plain rebuild would then skip.
@@ -277,6 +339,8 @@ class ErrorProneEndToEndTest {
         // A source set of the build's own, which only "every JavaCompile" reaches.
         assertThat(run.of(":compileExtraJava").outcome).isEqualTo(CompileOutcome.FULL)
         assertThat(run.of(":compileExtraJava").diagnostics.map { File(it.path).name }).containsExactly("ReindexTool.java")
+        // An included build the root depends on is compiled for it, and the init script reaches it too.
+        assertThat(run.of(":lib:compileJava").outcome).isEqualTo(CompileOutcome.FULL)
         // It changes no input of the compile tasks, so the next ordinary build keeps what it found.
         assertThat(build("compileJava").of(":compileJava").outcome).isEqualTo(CompileOutcome.NONE)
     }
