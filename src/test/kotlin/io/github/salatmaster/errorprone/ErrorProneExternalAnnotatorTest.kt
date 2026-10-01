@@ -1,6 +1,9 @@
 package io.github.salatmaster.errorprone
 
 import com.intellij.codeInsight.daemon.impl.HighlightInfo
+import com.intellij.codeInsight.intention.IntentionActionDelegate
+import com.intellij.codeInsight.intention.IntentionActionWithOptions
+import com.intellij.codeInsight.intention.preview.IntentionPreviewInfo
 import com.intellij.lang.annotation.HighlightSeverity
 import com.intellij.openapi.actionSystem.IdeActions
 import com.intellij.openapi.command.WriteCommandAction
@@ -65,6 +68,46 @@ class ErrorProneExternalAnnotatorTest : ErrorProneLightTestCase() {
         assertThat(errorProneHighlights().single().toolTip).contains("Did you mean: <code>List&lt;String&gt; x = f();</code>")
     }
 
+    fun `test lists every fix Error Prone offers in the tooltip`() {
+        commit(CompileOutcome.FULL, diagnostic(line = 2, column = 17, suggestion = "'a(Locale.ROOT)' or 'a(Locale.getDefault())' or to remove this line"))
+
+        assertThat(errorProneHighlights().single().toolTip).contains(
+            "Did you mean: <code>a(Locale.ROOT)</code>",
+            "<br>or: <code>a(Locale.getDefault())</code>",
+            "<br>or: remove this line",
+        )
+    }
+
+    private fun previewOfFix(): IntentionPreviewInfo {
+        myFixture.editor.caretModel.moveToOffset(source.indexOf("toString"))
+        // As the fix hands it over: the popup turns a custom diff into a diff of its own.
+        val fix = IntentionActionDelegate.unwrap(myFixture.findSingleIntention("Apply Error Prone fix"))
+        return fix.generatePreview(project, myFixture.editor, myFixture.file)
+    }
+
+    fun `test previews the fix Error Prone applies as a change of its line`() {
+        commit(CompileOutcome.FULL, diagnostic(line = 2, column = 17, fixable = true, suggestion = "'@Override public String toString() { return \"\"; }' or 'x'"))
+
+        val preview = previewOfFix() as IntentionPreviewInfo.CustomDiff
+
+        assertThat(preview.originalText()).isEqualTo("public String toString() { return \"\"; }")
+        assertThat(preview.modifiedText()).isEqualTo("@Override public String toString() { return \"\"; }")
+    }
+
+    fun `test previews a removal as the line gone`() {
+        commit(CompileOutcome.FULL, diagnostic(line = 2, column = 17, fixable = true, suggestion = "to remove this line"))
+
+        assertThat((previewOfFix() as IntentionPreviewInfo.CustomDiff).modifiedText()).isEmpty()
+    }
+
+    fun `test previews a fix of another line as that line, not as a change of this one`() {
+        commit(CompileOutcome.FULL, diagnostic(line = 2, column = 17, fixable = true, suggestion = "'private static final Logger LOG = Logger.create();'"))
+
+        val preview = previewOfFix() as IntentionPreviewInfo.Html
+
+        assertThat(preview.content().toString()).contains("private static final Logger LOG = Logger.create();")
+    }
+
     fun `test a later full build without diagnostics removes the highlight`() {
         commit(CompileOutcome.FULL, diagnostic(line = 2, column = 17))
         assertThat(errorProneHighlights()).hasSize(1)
@@ -78,7 +121,7 @@ class ErrorProneExternalAnnotatorTest : ErrorProneLightTestCase() {
         myFixture.configureByText("Many.java", "class Many {\n  public String to<caret>String() { return \"\"; }\n}\n")
         commit(CompileOutcome.FULL, diagnostic(line = 2, column = 17))
 
-        myFixture.launchAction(myFixture.findSingleIntention("Suppress 'MissingOverride' with @SuppressWarnings"))
+        myFixture.launchAction(myFixture.findSingleIntention("Suppress 'MissingOverride' for method 'toString'"))
 
         // Fully qualified here: the light project has no JDK to shorten java.lang.SuppressWarnings against.
         assertThat(myFixture.file.text).contains("SuppressWarnings(\"MissingOverride\")")
@@ -120,10 +163,42 @@ class ErrorProneExternalAnnotatorTest : ErrorProneLightTestCase() {
         assertThat(errorProneHighlights().map { it.text }).containsExactly("toString")
     }
 
+    private val locals = "class Many {\n  void f() {\n    String s = \"\".toUpperCase();\n    String t = \"\".toUpperCase();\n  }\n  String g = \"\".toUpperCase();\n}\n"
+
+    /** A StringCaseLocaleUsage on the toUpperCase of [line] (1-based) of [locals]. */
+    private fun upperCaseAt(line: Int) =
+        diagnostic(line = line, column = locals.lines()[line - 1].indexOf("toUpperCase") + 1, check = "StringCaseLocaleUsage")
+
+    fun `test suppresses in the narrowest declaration, and offers the wider ones`() {
+        myFixture.configureByText("Many.java", locals)
+        commit(CompileOutcome.FULL, upperCaseAt(3))
+        myFixture.editor.caretModel.moveToOffset(locals.indexOf("toUpperCase"))
+
+        val suppress = myFixture.findSingleIntention("Suppress 'StringCaseLocaleUsage' for variable 's'")
+
+        // The wider ones are its options: a submenu in the IDE, listed alongside in a test.
+        assertThat((IntentionActionDelegate.unwrap(suppress) as IntentionActionWithOptions).options.map { it.text })
+            .containsExactly("Suppress 'StringCaseLocaleUsage' for method 'f'", "Suppress 'StringCaseLocaleUsage' for class 'Many'")
+        myFixture.launchAction(suppress)
+        assertThat(myFixture.editor.document.text).contains("SuppressWarnings(\"StringCaseLocaleUsage\") String s")
+    }
+
+    fun `test a suppression settles the check's other diagnostics in its declaration at once`() {
+        myFixture.configureByText("Many.java", locals)
+        commit(CompileOutcome.FULL, upperCaseAt(3), upperCaseAt(4), upperCaseAt(6))
+        myFixture.editor.caretModel.moveToOffset(locals.indexOf("toUpperCase"))
+        myFixture.launchAction(myFixture.findSingleIntention("Suppress 'StringCaseLocaleUsage' for method 'f'"))
+
+        // The field's is outside the method: the next build decides about it.
+        assertThat(errorProneHighlights()).hasSize(1)
+        myFixture.performEditorAction(IdeActions.ACTION_UNDO)
+        assertThat(errorProneHighlights()).hasSize(3)
+    }
+
     fun `test undoing a suppression brings the diagnostic back`() {
         myFixture.configureByText("Many.java", "class Many {\n  public String to<caret>String() { return \"\"; }\n}\n")
         commit(CompileOutcome.FULL, diagnostic(line = 2, column = 17))
-        myFixture.launchAction(myFixture.findSingleIntention("Suppress 'MissingOverride' with @SuppressWarnings"))
+        myFixture.launchAction(myFixture.findSingleIntention("Suppress 'MissingOverride' for method 'toString'"))
 
         myFixture.performEditorAction(IdeActions.ACTION_UNDO)
 
@@ -187,6 +262,25 @@ class ErrorProneExternalAnnotatorTest : ErrorProneLightTestCase() {
         assertThat(myFixture.filterAvailableIntentions("Apply Error Prone fix")).isEmpty()
     }
 
+    fun `test says while Error Prone writes a fix, and does not start it again`() {
+        myFixture.configureByText("Many.java", "class Many {\n  public String to<caret>String() { return \"\"; }\n}\n")
+        commit(CompileOutcome.FULL, diagnostic(line = 2, column = 17, fixable = true))
+        val builds = ErrorProneBuilds.getInstance(project)
+        val file = myFixture.file.virtualFile
+
+        assertThat(builds.startFix(file, "MissingOverride")).isTrue()
+        try {
+            assertThat(builds.startFix(file, "MissingOverride")).isFalse()
+            assertThat(myFixture.filterAvailableIntentions("Error Prone is writing").map { it.text })
+                .containsExactly("Error Prone is writing its fix for 'MissingOverride'…")
+            assertThat(myFixture.filterAvailableIntentions("Apply Error Prone fix")).isEmpty()
+        } finally {
+            builds.finishFix(file, "MissingOverride")
+        }
+        assertThat(myFixture.filterAvailableIntentions("Apply Error Prone fix").map { it.text })
+            .containsExactly("Apply Error Prone fix for 'MissingOverride' in this file")
+    }
+
     fun `test does not offer Error Prone's fix in generated code, which the next build would undo`() {
         val text = "class Gen {\n  public String toString() { return \"\"; }\n}\n"
         myFixture.configureFromExistingVirtualFile(generatedFile("Gen.java", text))
@@ -195,7 +289,7 @@ class ErrorProneExternalAnnotatorTest : ErrorProneLightTestCase() {
 
         assertThat(myFixture.filterAvailableIntentions("Apply Error Prone fix")).isEmpty()
         // Still reported, and still suppressible where the generator allows it.
-        assertThat(myFixture.filterAvailableIntentions("Suppress 'MissingOverride'")).hasSize(1)
+        assertThat(myFixture.filterAvailableIntentions("Suppress 'MissingOverride'")).isNotEmpty()
     }
 
     fun `test nothing is shown when the inspection is turned off`() {

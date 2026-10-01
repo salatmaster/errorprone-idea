@@ -209,16 +209,21 @@ internal class ErrorProneTab(private val project: Project) :
                 val diagnostic = item.diagnostic
                 heading(diagnostic.check, diagnostic.severity)
                 row { text(StringUtil.escapeXmlEntities(diagnostic.message)) }
-                diagnostic.suggestion?.let { suggestion ->
-                    row { label("Did you mean") }
+                diagnostic.fixes.forEachIndexed { i, fix ->
+                    row { label(if (i == 0) "Did you mean" else "Or") }
                     row {
-                        cell(JBTextArea(suggestion).apply {
-                            isEditable = false
-                            lineWrap = true
-                            font = EditorUtil.getEditorFont()
-                        }).align(AlignX.FILL)
+                        if (fix.isEmpty()) {
+                            label("Remove this line")
+                        } else {
+                            cell(JBTextArea(fix).apply {
+                                isEditable = false
+                                lineWrap = true
+                                font = EditorUtil.getEditorFont()
+                            }).align(AlignX.FILL)
+                        }
                     }
                 }
+                if (diagnostic.fixes.size > 1 && canFix(item)) row { comment("Apply Fix writes the first.") }
                 row {
                     if (canFix(item)) button("Apply Fix in File") { locked { applyFixInFile(item) } }
                     if (canFix(item)) button("Apply for This Check…") { locked { applyForCheck(diagnostic.check) } }
@@ -252,7 +257,7 @@ internal class ErrorProneTab(private val project: Project) :
     private fun locked(run: () -> Unit) = ApplicationManager.getApplication().invokeLater(run)
 
     private fun applyFixInFile(item: TabItem) {
-        ApplyErrorProneFix(item.diagnostic.check, item.located.task, item.file).invoke(project, null, null)
+        ApplyErrorProneFix(item.located, item.file).invoke(project, null, null)
     }
 
     private fun applyForCheck(check: String) {

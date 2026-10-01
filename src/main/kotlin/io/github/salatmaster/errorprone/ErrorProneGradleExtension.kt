@@ -58,7 +58,8 @@ class ErrorProneGradleExtension : GradleExecutionHelperExtension {
     override fun configureOperation(operation: LongRunningOperation, context: GradleExecutionContext) {
         try {
             if (context.taskId.type != ExternalSystemTaskType.EXECUTE_TASK) return
-            if (context.settings.getUserData(PATCH_BUILD) == true) return
+            val patched = context.settings.getUserData(PATCH_BUILD)
+            if (patched != null && context.gradleVersion < TREE_PATHS) return
             val project = context.project
             if (context.gradleVersion < MIN_GRADLE_VERSION) {
                 // Most projects on an older Gradle do not use Error Prone at all, so only someone who
@@ -84,7 +85,7 @@ class ErrorProneGradleExtension : GradleExecutionHelperExtension {
                     if (log.isDebugEnabled && (outcome != CompileOutcome.NONE || diagnostics.isNotEmpty())) {
                         log.debug("$task in $build finished: $outcome, ${diagnostics.size} Error Prone diagnostics")
                     }
-                    store.commit("$build|$task", outcome, resolve(diagnostics))
+                    if (patched == null || task !in patched) store.commit("$build|$task", outcome, resolve(diagnostics))
                 },
                 onCutOff = { count ->
                     project.service<ErrorProneNotifier>().once(
@@ -94,6 +95,7 @@ class ErrorProneGradleExtension : GradleExecutionHelperExtension {
                     )
                 },
                 onJavacLimit = { task ->
+                    if (patched != null && task in patched) return@ErrorProneBuildListener
                     project.service<ErrorProneNotifier>().once(
                         "javac-limit",
                         "javac reported only the first $JAVAC_MAX_WARNINGS warnings of $task, so some of Error " +

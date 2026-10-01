@@ -37,10 +37,34 @@ class ErrorProneDiagnosticTest {
                 severity = ErrorProneSeverity.WARNING,
                 message = "toString overrides method in Object; expected @Override",
                 link = "https://errorprone.info/bugpattern/MissingOverride",
-                suggestion = "static class C0 { @Override public String toString() { return \"\"; } }",
+                suggestion = "'static class C0 { @Override public String toString() { return \"\"; } }'",
                 fixable = true,
             )
         )
+        assertThat(parse()!!.fixes).containsExactly("static class C0 { @Override public String toString() { return \"\"; } }")
+    }
+
+    private fun fixes(didYouMean: String) =
+        parse(details = "Foo.java:3: warning: [Check] message\n  (see https://errorprone.info/bugpattern/Check)\n  $didYouMean")!!.fixes
+
+    @Test
+    fun `reads every fix Error Prone offers, the one it applies first`() {
+        assertThat(fixes("Did you mean 'a(Locale.ROOT)' or 'a(Locale.getDefault())'?")).containsExactly("a(Locale.ROOT)", "a(Locale.getDefault())")
+        // An empty one removes the line.
+        assertThat(fixes("Did you mean to remove this line?")).containsExactly("")
+        assertThat(fixes("Did you mean 'int x;' or to remove this line?")).containsExactly("int x;", "")
+        assertThat(fixes("Did you mean to remove this line or 'int x;'?")).containsExactly("", "int x;")
+    }
+
+    @Test
+    fun `reads a fix with quotes and question marks of its own`() {
+        assertThat(fixes("Did you mean 'char c = s.isEmpty() ? '\\'' : 'x';'?")).containsExactly("char c = s.isEmpty() ? '\\'' : 'x';")
+    }
+
+    @Test
+    fun `takes a suggestion not in javac's words as one fix`() {
+        // What the plugin stored before it kept javac's quotes, restored from the last session.
+        assertThat(parse()!!.copy(suggestion = "a() or b()").fixes).containsExactly("a() or b()")
     }
 
     @Test
@@ -121,7 +145,7 @@ class ErrorProneDiagnosticTest {
         val details = "/src/demo/Ru.java:6: warning: [MissingSummary] A summary line is required\n" +
             "  Did you mean '/** Returns \\u0441\\u043f\\u0438\\u0441\\u043e\\u043a.'?"
 
-        assertThat(parse(details = details)!!.suggestion).isEqualTo("/** Returns список.")
+        assertThat(parse(details = details)!!.fixes).containsExactly("/** Returns список.")
     }
 
     @Test

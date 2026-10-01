@@ -2,7 +2,10 @@ package io.github.salatmaster.errorprone
 
 import com.intellij.analysis.AnalysisScope
 import com.intellij.analysis.BaseAnalysisAction
+import com.intellij.codeInsight.hint.HintManager
 import com.intellij.codeInsight.intention.IntentionAction
+import com.intellij.codeInsight.intention.IntentionActionWithOptions
+import com.intellij.codeInsight.intention.PriorityAction
 import com.intellij.codeInsight.intention.preview.IntentionPreviewInfo
 import com.intellij.codeInsight.intention.preview.IntentionPreviewUtils
 import com.intellij.codeInspection.JavaSuppressionUtil
@@ -31,26 +34,32 @@ import com.intellij.openapi.roots.ProjectFileIndex
 import com.intellij.openapi.util.Key
 import com.intellij.openapi.util.TextRange
 import com.intellij.openapi.util.io.FileUtil
+import com.intellij.openapi.util.text.HtmlBuilder
+import com.intellij.openapi.util.text.HtmlChunk
 import com.intellij.openapi.vcs.changes.patch.ApplyPatchAction
 import com.intellij.openapi.vfs.LocalFileSystem
 import com.intellij.openapi.vfs.VfsUtilCore
 import com.intellij.openapi.vfs.VirtualFile
 import com.intellij.psi.*
+import com.intellij.psi.codeStyle.JavaCodeStyleSettings
+import com.intellij.psi.codeStyle.PackageEntry
 import com.intellij.psi.util.PsiTreeUtil
 import com.intellij.util.concurrency.AppExecutorUtil
 import org.jetbrains.plugins.gradle.settings.GradleSettings
 import java.io.IOException
 import java.nio.file.Files
 import java.nio.file.Path
+import java.util.UUID
 import kotlin.io.path.name
 import kotlin.io.path.readText
 import kotlin.io.path.writeText
 
 /**
- * Marks a Gradle execution that only writes Error Prone's fixes. Such a build runs the patched checks
- * and nothing else, so its diagnostics would wipe the others'; the Gradle hook leaves it alone.
+ * Marks a Gradle execution that writes Error Prone's fixes, with the tasks it patches. Those run the
+ * patched checks and nothing else, so their diagnostics would wipe the others'; the Gradle hook keeps them
+ * out, and keeps what the tasks they depend on report. Before [TREE_PATHS] every task is patched.
  */
-internal val PATCH_BUILD: Key<Boolean> = Key.create("errorprone.patch")
+internal val PATCH_BUILD: Key<Set<String>> = Key.create("errorprone.patch")
 
 /**
  * Error Prone writes its fixes as one unified diff per compile task, every path relative to the
@@ -94,28 +103,79 @@ internal fun rebasePatch(patch: String, patchDir: Path, projectDir: Path, keep: 
 }
 
 /**
- * Alt+Enter on an Error Prone highlight: silence the check with `@SuppressWarnings`, which Error Prone
- * reads itself, on the method, field or class the diagnostic is in.
+ * Alt+Enter on an Error Prone highlight: silence the check with `@SuppressWarnings`, which Error Prone reads
+ * itself, on the narrowest declaration the diagnostic is in (a variable, a method or field, a class); the
+ * wider ones are its options. Every diagnostic of the check in that declaration goes with it, at once.
+ * [targets] names each declaration, narrowest first, as they were when the highlight was made; [level]
+ * is the one this suppresses in.
  */
-internal class SuppressErrorProneFix(private val check: String, private val marker: RangeMarker) : IntentionAction {
+internal class SuppressErrorProneFix(
+    private val check: String,
+    private val marker: RangeMarker,
+    private val targets: List<String> = emptyList(),
+    private val level: Int = 0,
+) : IntentionActionWithOptions, PriorityAction {
 
-    override fun getText(): String = "Suppress '$check' with @SuppressWarnings"
+    override fun getText(): String =
+        targets.getOrNull(level)?.let { "Suppress '$check' for $it" } ?: "Suppress '$check' with @SuppressWarnings"
+
+    // The submenu lists the wider declarations narrowest first, not by name.
+    override fun getPriority(): PriorityAction.Priority = when (level) {
+        0, 2 -> PriorityAction.Priority.NORMAL
+        1 -> PriorityAction.Priority.HIGH
+        else -> PriorityAction.Priority.LOW
+    }
 
     override fun getFamilyName(): String = "Suppress Error Prone check"
 
-    override fun isAvailable(project: Project, editor: Editor?, file: PsiFile?): Boolean = file != null && marker.isValid
+    override fun getOptions(): List<IntentionAction> =
+        if (level > 0) emptyList() else (1 until targets.size).map { SuppressErrorProneFix(check, marker, targets, it) }
+
+    // The wider declarations, not the inspection's own options, which suppress nothing Error Prone reads.
+    override fun getCombiningPolicy() = IntentionActionWithOptions.CombiningPolicy.IntentionOptionsOnly
+
+    override fun isAvailable(project: Project, editor: Editor?, file: PsiFile?): Boolean =
+        file != null && marker.isValid && suppressionTargets(file, marker.startOffset).size > level
 
     override fun startInWriteAction(): Boolean = true
 
     override fun invoke(project: Project, editor: Editor?, file: PsiFile?) {
-        val element = file?.findElementAt(marker.startOffset) ?: return
-        val owner = PsiTreeUtil.getParentOfType(element, PsiMethod::class.java, PsiField::class.java, PsiClass::class.java)
-            as? PsiModifierListOwner ?: return
+        val owner = file?.let { suppressionTargets(it, marker.startOffset).getOrNull(level) } ?: return
+        // The preview runs this on a copy of the file; only the real edit settles diagnostics.
+        val real = !IntentionPreviewUtils.isPreviewElement(file)
+        val settled = if (!real) emptyList() else file.virtualFile?.let { ErrorProneDiagnostics.getInstance(project).forFile(it) }.orEmpty()
+            .filter { it.diagnostic.check == check && owner.textRange.contains(it.range) }
+            .map { it.marker }
         // Adds to an existing @SuppressWarnings rather than writing a second one.
         JavaSuppressionUtil.addSuppressAnnotation(project, owner, owner, check)
-        // The preview runs this on a copy of the file; only the real edit settles the diagnostic.
-        if (!IntentionPreviewUtils.isPreviewElement(file)) dismissUndoably(project, marker.document, listOf(marker))
+        if (real) dismissUndoably(project, marker.document, (settled + marker).distinct())
     }
+}
+
+/**
+ * The declarations around [offset] that `@SuppressWarnings` can go on, narrowest first. Not a lambda's
+ * parameter, whose type may not be written out, nor an anonymous class, which has no modifiers.
+ */
+internal fun suppressionTargets(file: PsiFile, offset: Int): List<PsiModifierListOwner> =
+    generateSequence(file.findElementAt(offset)) { it.parent }.takeWhile { it !is PsiFile }
+        .filter {
+            it is PsiLocalVariable || it is PsiMethod || it is PsiField ||
+                (it is PsiParameter && it.declarationScope !is PsiLambdaExpression) ||
+                (it is PsiClass && it !is PsiAnonymousClass && it !is PsiTypeParameter)
+        }
+        .map { it as PsiModifierListOwner }
+        .toList()
+
+/** How the suppression's text names [owner]: `method 'toString'`. */
+internal fun describeTarget(owner: PsiModifierListOwner): String {
+    val kind = when (owner) {
+        is PsiParameter -> "parameter"
+        is PsiLocalVariable -> "variable"
+        is PsiMethod -> if (owner.isConstructor) "constructor" else "method"
+        is PsiField -> "field"
+        else -> "class"
+    }
+    return "$kind '${(owner as? PsiNamedElement)?.name}'"
 }
 
 /**
@@ -124,39 +184,80 @@ internal class SuppressErrorProneFix(private val check: String, private val mark
  * Prone writes the fixes of a check for a whole file as one patch, imports included, so they cannot be
  * told apart per occurrence; the text says "in this file" for that reason.
  */
-internal class ApplyErrorProneFix(
-    private val check: String,
-    private val task: String,
-    private val file: VirtualFile,
-) : IntentionAction {
+internal class ApplyErrorProneFix(private val located: Located, private val file: VirtualFile) : IntentionAction {
 
-    override fun getText(): String = "Apply Error Prone fix for '$check' in this file"
+    private val check = located.diagnostic.check
+    private val task = located.task
+
+    /** Whether a build is writing this fix already, as of the last [isAvailable]. */
+    private var writing = false
+
+    override fun getText(): String =
+        if (writing) "Error Prone is writing its fix for '$check'…" else "Apply Error Prone fix for '$check' in this file"
 
     override fun getFamilyName(): String = "Apply Error Prone fix"
 
-    override fun isAvailable(project: Project, editor: Editor?, file: PsiFile?): Boolean = true
+    override fun isAvailable(project: Project, editor: Editor?, file: PsiFile?): Boolean {
+        writing = ErrorProneBuilds.getInstance(project).isFixing(this.file, check)
+        return true
+    }
 
     override fun startInWriteAction(): Boolean = false
 
-    // Nothing to preview before the build has run.
-    override fun generatePreview(project: Project, editor: Editor, file: PsiFile): IntentionPreviewInfo = IntentionPreviewInfo.EMPTY
+    /**
+     * The line javac's "Did you mean" gave for the fix Error Prone applies: the whole fix exists only once
+     * a build has written it. It is the first line the fix changes, usually the flagged one, and shown as
+     * a change of that line when it reads like one.
+     */
+    override fun generatePreview(project: Project, editor: Editor, file: PsiFile): IntentionPreviewInfo {
+        val fix = located.diagnostic.fixes.firstOrNull() ?: return IntentionPreviewInfo.EMPTY
+        val document = editor.document
+        val marker = located.marker
+        if (!marker.isValid || marker.startOffset > document.textLength) return IntentionPreviewInfo.EMPTY
+        val line = document.getLineNumber(marker.startOffset)
+        val flagged = document.getText(TextRange(document.getLineStartOffset(line), document.getLineEndOffset(line))).trim()
+        if (fix.isEmpty() || isEditOf(flagged, fix)) return IntentionPreviewInfo.CustomDiff(file.fileType, file.name, flagged, fix)
+        return IntentionPreviewInfo.Html(
+            HtmlBuilder().append("Error Prone's fix changes a line to").br()
+                .append(HtmlChunk.tag("code").addText(fix)).toFragment()
+        )
+    }
 
     override fun invoke(project: Project, editor: Editor?, file: PsiFile?) {
         val target = realPath(Path.of(this.file.path)) ?: return
+        // The build takes seconds, and a second one would write a fix the first has already applied.
+        val builds = ErrorProneBuilds.getInstance(project)
+        val started = builds.startFix(this.file, check)
+        editor?.let { HintManager.getInstance().showInformationHint(it, "Error Prone is writing its fix for '$check'…") }
+        if (!started) return
         val documents = FileDocumentManager.getInstance()
         // The build reads the file from disk.
         documents.getDocument(this.file)?.let(documents::saveDocument)
         val root = task.substringBeforeLast('|')
-        fixWithErrorProne(project, root, listOf(task.substringAfterLast('|')), setOf(check), { it == target }) { patch ->
-            // Read off the EDT and once indexing is over: the imports are looked up in the indexes, which
-            // the classes the build just wrote may be refreshing.
-            ReadAction.nonBlocking<FilePatch?> {
-                PsiManager.getInstance(project).findFile(this.file)?.let { readFix(it, VfsUtilCore.loadText(patch)) }
+        val name = "Error Prone fix for '$check' in ${this.file.name}"
+        // Written until it is applied, or until it turns out there is nothing to apply.
+        val done = { builds.finishFix(this.file, check) }
+        try {
+            fixWithErrorProne(project, root, listOf(task.substringAfterLast('|')), setOf(check), { it == target }, name, done) { patch ->
+                // Read off the EDT and once indexing is over: the imports are looked up in the indexes, which
+                // the classes the build just wrote may be refreshing.
+                ReadAction.nonBlocking<FilePatch?> {
+                    PsiManager.getInstance(project).findFile(this.file)?.let { readFix(it, VfsUtilCore.loadText(patch)) }
+                }
+                    .inSmartMode(project)
+                    .expireWith(project)
+                    .finishOnUiThread(ModalityState.nonModal()) { fix ->
+                        try {
+                            apply(project, patch, fix)
+                        } finally {
+                            done()
+                        }
+                    }
+                    .submit(AppExecutorUtil.getAppExecutorService())
             }
-                .inSmartMode(project)
-                .expireWith(project)
-                .finishOnUiThread(ModalityState.nonModal()) { fix -> apply(project, patch, fix) }
-                .submit(AppExecutorUtil.getAppExecutorService())
+        } catch (e: Throwable) {
+            done()
+            throw e
         }
     }
 
@@ -173,6 +274,13 @@ internal class ApplyErrorProneFix(
             NotificationAction.createSimpleExpiring("Review in Apply Patch…") { showApplyPatch(project, patch) },
         )
     }
+}
+
+/** Whether [new] reads as an edit of [old] rather than of another line: at least half of the shorter is kept at either end. */
+private fun isEditOf(old: String, new: String): Boolean {
+    val prefix = old.commonPrefixWith(new).length
+    val kept = prefix + old.substring(prefix).commonSuffixWith(new.substring(prefix)).length
+    return kept * 2 >= minOf(old.length, new.length)
 }
 
 /**
@@ -245,13 +353,23 @@ internal fun isGeneratedCode(project: Project, file: VirtualFile): Boolean {
     return index.getSourceRootForFile(file)?.parent?.let(index::isExcluded) == true
 }
 
+/**
+ * How Error Prone lays out the imports of its fixes, as near the project's Java code style as its choices
+ * come: static imports first (Google's style) or IntelliJ's default layout. A fix that adds an import
+ * reprints the whole block, so any other layout would move every import in the file.
+ */
+internal fun patchImportOrder(project: Project): String {
+    val first = JavaCodeStyleSettings.getInstance(project).IMPORT_LAYOUT_TABLE.entries.firstOrNull { it != PackageEntry.BLANK_LINE_ENTRY }
+    return if (first?.isStatic == true) "static-first" else "idea"
+}
+
 private val log = Logger.getInstance("io.github.salatmaster.errorprone.ErrorProneFixes")
 
 /**
- * Runs a build of [tasks] in the Gradle build at [root] that writes Error Prone's fixes for [checks],
- * then hands those for the files [keep] accepts to [onPatch], on a background thread, as one patch file. The build
- * compiles in full, like Run Error Prone, and is kept away from the diagnostics store: it runs only
- * [checks].
+ * Runs a build of [tasks] in the Gradle build at [root], named [name], that writes Error Prone's fixes for
+ * [checks], then hands those for the files [keep] accepts to [onPatch], on a background thread, as one
+ * patch file, or calls [onNoPatch] when there is none. The build compiles [tasks] in full, like Run Error
+ * Prone, and is kept away from the diagnostics store: it runs only [checks].
  */
 internal fun fixWithErrorProne(
     project: Project,
@@ -259,12 +377,13 @@ internal fun fixWithErrorProne(
     tasks: List<String>,
     checks: Collection<String>,
     keep: (Path) -> Boolean,
+    name: String = "Error Prone fixes",
+    onNoPatch: () -> Unit = {},
     onPatch: (VirtualFile) -> Unit,
 ) {
-    // Real paths throughout: Error Prone writes paths relative to the directory it was given.
-    val patchDir = FileUtil.createTempDirectory("errorprone-fixes", null).toPath().toRealPath()
+    val patchDir = patchDirectory()
     // In the background, as a step of a quick fix.
-    runGradle(project, root, tasks, "Error Prone fixes", errorProneInitScript(checks, patchDir), PATCH_BUILD) {
+    runGradle(project, root, tasks, name, errorProneInitScript(checks, patchDir, patchImportOrder(project), targets = tasks), PATCH_BUILD, tasks.toSet()) {
         ApplicationManager.getApplication().executeOnPooledThread {
             // Read whether or not the build succeeded: a compile that fails still writes what it found.
             val patch = try {
@@ -280,14 +399,23 @@ internal fun fixWithErrorProne(
                         "net.ltgt.errorprone Gradle plugin, and a build that gets as far as Error Prone.",
                     NotificationType.WARNING,
                 )
+                onNoPatch()
                 return@executeOnPooledThread
             }
             val combined = patchDir.resolve("Error Prone fixes.patch").apply { writeText(patch) }
             // Found here rather than on the EDT, where a refresh is a slow operation.
-            LocalFileSystem.getInstance().refreshAndFindFileByNioFile(combined)?.let(onPatch)
+            LocalFileSystem.getInstance().refreshAndFindFileByNioFile(combined)?.let(onPatch) ?: onNoPatch()
         }
     }
 }
+
+/**
+ * Where one fix build writes its patches; a real path, as Error Prone writes paths relative to it. Named
+ * afresh each time: the IDE's file system remembers what it read at a path in an earlier session and,
+ * finding the file there again, hands back that content for a new patch.
+ */
+internal fun patchDirectory(): Path =
+    FileUtil.createTempDirectory("errorprone-fixes-${UUID.randomUUID().toString().take(8)}", null).toPath().toRealPath()
 
 private fun showApplyPatch(project: Project, patch: VirtualFile) {
     ApplicationManager.getApplication().invokeLater({ ApplyPatchAction.showApplyPatch(project, patch) }, project.disposed)

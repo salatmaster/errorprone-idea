@@ -1,5 +1,6 @@
 package io.github.salatmaster.errorprone
 
+import com.intellij.codeInsight.daemon.HighlightDisplayKey
 import com.intellij.lang.annotation.AnnotationHolder
 import com.intellij.lang.annotation.ExternalAnnotator
 import com.intellij.lang.annotation.HighlightSeverity
@@ -41,8 +42,13 @@ class ErrorProneExternalAnnotator : ExternalAnnotator<List<Located>, List<Locate
             var annotation = holder.newAnnotation(diagnostic.severity.highlight, diagnostic.text)
                 .range(visibleRange(file, range))
                 .tooltip(tooltip(diagnostic))
-            if (diagnostic.fixable && fixable) annotation = annotation.withFix(ApplyErrorProneFix(diagnostic.check, located.task, virtualFile))
-            annotation.withFix(SuppressErrorProneFix(diagnostic.check, located.marker)).create()
+            if (diagnostic.fixable && fixable) annotation = annotation.withFix(ApplyErrorProneFix(located, virtualFile))
+            val targets = suppressionTargets(file, range.startOffset).map(::describeTarget)
+            val suppress = SuppressErrorProneFix(diagnostic.check, located.marker, targets)
+            // Under the inspection's key, the submenu of wider declarations is titled Error Prone, not Annotator.
+            val key = HighlightDisplayKey.find(ErrorProneInspection.SHORT_NAME)
+            annotation = if (key != null) annotation.newFix(suppress).key(key).registerFix() else annotation.withFix(suppress)
+            annotation.create()
         }
     }
 
@@ -71,7 +77,10 @@ private fun visibleRange(file: PsiFile, range: TextRange): TextRange {
 private fun tooltip(diagnostic: ErrorProneDiagnostic): String = buildString {
     append("<html><b>").append(escape(diagnostic.check)).append("</b> (Error Prone)<br>")
     append(escape(diagnostic.message))
-    diagnostic.suggestion?.let { append("<br>Did you mean: <code>").append(escape(it)).append("</code>") }
+    diagnostic.fixes.forEachIndexed { i, fix ->
+        append(if (i == 0) "<br>Did you mean: " else "<br>or: ")
+        append(if (fix.isEmpty()) "remove this line" else "<code>${escape(fix)}</code>")
+    }
     diagnostic.link?.let { append("<br><a href=\"").append(escape(it)).append("\">").append(escape(it)).append("</a>") }
     append("</html>")
 }

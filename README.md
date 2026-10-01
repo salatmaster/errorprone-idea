@@ -27,9 +27,10 @@ build stays the source of truth.
 
 - **In the editor.** An underline on the exact token, with the check, the message, Error Prone's
   suggested fix and a link to the check's documentation in the tooltip.
-- **Fix or suppress with Alt+Enter.** Apply Error Prone's own fix, imports included, or add
-  `@SuppressWarnings` to the method, field or class. Either is one undoable edit, and the highlight goes
-  at once.
+- **Fix or suppress with Alt+Enter.** Apply Error Prone's own fix, imports included, with a preview of
+  the line it writes. Or add `@SuppressWarnings` to the narrowest declaration around the diagnostic — a
+  variable, a method, a class — or a wider one from the submenu. Either is one undoable edit, and the
+  highlights it settles go at once.
 - **A tab in the Problems tool window.** Every diagnostic in the project, grouped by check or by file,
   with a filter, severity toggles, and the details of the selection with its fix, suppression and
   documentation a click away.
@@ -138,14 +139,17 @@ writes follows it.
 - **Gradle only**, and **local builds only**: Maven, the IDE's own build system, and builds in WSL,
   Docker or on a remote host are not supported.
 - **Included builds need Gradle 9.7**: before it, Gradle files their diagnostics under the root build's
-  task of the same name. Run Error Prone does not reach included builds at all; they update when the IDE
-  builds them.
+  task of the same name. Run Error Prone recompiles an included build only when the root build depends on
+  it; one it does not depend on updates when the IDE builds it.
 - **A file changed while the IDE was closed** (a pull, a checkout) loses its diagnostics until the next
   build compiles it.
 - **An incremental build can leave a stale warning** on a file that was recompiled only because a file
   it depends on changed. Run Error Prone clears it.
 - **Recompiling after an edit** follows edits near a diagnostic only, and waits while another Gradle
   task of the project runs, a long `bootRun` included.
+- **A few checks read `@SuppressWarnings` on the class only** (InconsistentCapitalization, for one): when
+  a narrower suppression does not hold, the next build shows the diagnostic again, and the class is in the
+  Suppress submenu.
 - **Fixes cover a whole file**: Error Prone writes all of a check's fixes in a file together, so
   Apply Error Prone fix applies them together.
 

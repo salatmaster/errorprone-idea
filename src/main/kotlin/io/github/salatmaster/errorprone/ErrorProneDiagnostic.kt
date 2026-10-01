@@ -9,7 +9,8 @@ enum class ErrorProneSeverity { ERROR, WARNING, NOTE }
  * [line] and [column] are javac's: 1-based, and the column counts a tab as reaching the next
  * multiple of 8 (see [expandedColumnToIndex]). [length] is how many characters the diagnostic
  * covers; javac nearly always reports 0, which means "the token at this position". [fixable] says
- * Error Prone has a fix for it: javac's text then offers one with "Did you mean".
+ * Error Prone has a fix for it: javac's text then offers one with "Did you mean". [suggestion] is what
+ * follows those words, as javac wrote it: `'a' or 'b'`, or `to remove this line`; see [fixes].
  */
 data class ErrorProneDiagnostic(
     val path: String,
@@ -26,6 +27,12 @@ data class ErrorProneDiagnostic(
     /** The one-line form shown by the editor, the status bar and the Problems tool window. */
     val text: String get() = "[$check] $message"
 
+    /**
+     * The fixes "Did you mean" offers, each as the line it would write, "" for one that removes it. The first
+     * is the one Error Prone applies.
+     */
+    val fixes: List<String> get() = suggestion?.let(::fixesOf).orEmpty()
+
     companion object {
         private val SEVERITY_BY_CODE = mapOf(
             "compiler.err.error.prone" to ErrorProneSeverity.ERROR,
@@ -35,7 +42,8 @@ data class ErrorProneDiagnostic(
         private val LABEL = Regex("""\[([^\]]+)]\s*(.*)""")
         // A plugin's link may be spaced out: NullAway prints "(see http://t.uber.com/nullaway )".
         private val LINK = Regex("""\(see (\S+)\s*\)""")
-        private val SUGGESTION = Regex("""Did you mean '(.*)'\?""")
+        // The last question mark on the line: a fix may have one of its own.
+        private val SUGGESTION = Regex("""Did you mean (.+)\?""")
 
         /**
          * What javac prints after the message. Gradle keeps only the label's first line, splitting on
@@ -79,6 +87,38 @@ data class ErrorProneDiagnostic(
                 fixable = details?.contains("Did you mean") == true,
             )
         }
+    }
+}
+
+private const val REMOVE = "to remove this line"
+
+/**
+ * The fixes in what javac printed after "Did you mean": quoted lines and removals, joined by " or ". A
+ * quote closes a fix where the next fix or the end follows it, so a fix may hold quotes of its own.
+ * Anything else, as the plugin stored it before it kept javac's quotes, is one fix.
+ */
+// ponytail: a string literal holding "' or '" splits its fix in two; javac's text cannot tell them apart.
+private fun fixesOf(text: String): List<String> {
+    val fixes = ArrayList<String>()
+    var rest = text
+    while (true) {
+        when {
+            rest.startsWith(REMOVE) -> {
+                fixes += ""
+                rest = rest.removePrefix(REMOVE)
+            }
+            rest.startsWith("'") -> {
+                val end = rest.indices.drop(1).firstOrNull { i ->
+                    rest[i] == '\'' && (i == rest.lastIndex || rest.startsWith(" or '", i + 1) || rest.startsWith(" or $REMOVE", i + 1))
+                } ?: return listOf(text)
+                fixes += rest.substring(1, end)
+                rest = rest.substring(end + 1)
+            }
+            else -> return listOf(text)
+        }
+        if (rest.isEmpty()) return fixes
+        if (!rest.startsWith(" or ")) return listOf(text)
+        rest = rest.substring(" or ".length)
     }
 }
 

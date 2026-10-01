@@ -76,4 +76,14 @@ class RebasePatchTest {
     fun `is empty when no file is kept`() {
         assertThat(rebasePatch(patch, patchDir, project) { false }).isEmpty()
     }
+
+    @Test
+    fun `gives every fix build a directory no earlier session used`() {
+        // The IDE's file system keeps what an earlier session read at a path; a fresh patch at that path
+        // would be read as the old one.
+        val first = patchDirectory()
+        first.toFile().deleteRecursively()
+
+        assertThat(patchDirectory()).isNotEqualTo(first)
+    }
 }

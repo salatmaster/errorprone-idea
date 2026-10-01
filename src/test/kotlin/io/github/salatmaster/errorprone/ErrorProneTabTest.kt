@@ -7,6 +7,7 @@ import com.intellij.openapi.util.Disposer
 import com.intellij.testFramework.PlatformTestUtil
 import com.intellij.ui.ColoredTreeCellRenderer
 import com.intellij.ui.SearchTextField
+import com.intellij.ui.components.JBTextArea
 import com.intellij.ui.treeStructure.Tree
 import com.intellij.util.ui.UIUtil
 import com.intellij.util.ui.tree.TreeUtil
@@ -133,6 +134,17 @@ class ErrorProneTabTest : ErrorProneLightTestCase() {
         tab.navigatable()!!.navigate(true)
         assertThat(FileEditorManager.getInstance(project).selectedTextEditor!!.caretModel.offset)
             .isEqualTo("// one\n".length + source.indexOf("toString"))
+    }
+
+    fun `test shows each fix Error Prone offers apart`() {
+        myFixture.configureByText("Many.java", source)
+        val tab = tab()
+        commit(CompileOutcome.FULL, diagnostic(line = 2, column = 17, fixable = true, suggestion = "'a(Locale.ROOT)' or 'a(Locale.getDefault())'"))
+        waitFor { tab.tree.rowCount == 1 }
+        selectFirstDiagnostic(tab)
+
+        assertThat(UIUtil.findComponentsOfType(tab.details, JBTextArea::class.java).map { it.text })
+            .containsExactly("a(Locale.ROOT)", "a(Locale.getDefault())")
     }
 
     fun `test suppresses from the tab as from the editor`() {

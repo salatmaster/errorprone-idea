@@ -6,6 +6,30 @@ All notable changes to this plugin are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- Alt+Enter previews Error Prone's fix: the line as the fix will write it, before the build that writes
+  the whole fix runs.
+
+### Changed
+
+- Applying a fix recompiles only the task that reported it, rather than every module it depends on in
+  full, which in a large build was most of the wait.
+- Suppress names the declaration it annotates and picks the narrowest, a local variable or a parameter
+  included, with the wider ones in its submenu. The check's other diagnostics in that declaration go at
+  once, rather than at the next build.
+- While Error Prone writes a fix, a hint at the caret says so and the build is named after the check and
+  the file. Pressing the fix again meanwhile starts no second build.
+
+### Fixed
+
+- The first fix of a session no longer fails with "could not be read" after an earlier session applied
+  one: each fix build now writes to a directory of its own.
+- A check that offers several fixes no longer shows them glued into one: the tooltip and the Error Prone
+  tab list each on its own, the one Apply Fix writes first.
+- A fix that adds an import no longer reorders the others: Error Prone lays the imports out as the
+  project's Java code style does, static imports first or IntelliJ's default.
+
 ## [0.2.0] - 2026-09-30
 
 ### Changed

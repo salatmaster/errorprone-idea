@@ -53,14 +53,19 @@ class ErrorProneGradleExtensionTest : ErrorProneLightTestCase() {
         assertThat(store.files().map { it.name }).containsExactlyInAnyOrder("A.java", "B.java")
     }
 
-    fun `test a build that only writes fixes leaves the diagnostics alone`() {
+    fun `test a build that writes fixes keeps out what its patched tasks report, and keeps the rest`() {
         val a = javaFile("A")
         build(context(root = a.parentFile), a)
+        val b = javaFile("B")
 
-        // It runs the patched checks only, so what it reports is not the whole truth about any task.
-        assertThat(build(context(root = a.parentFile, patchBuild = true), a)).isZero()
-
+        // A patched task runs only the checks being fixed: what it reports is not the whole truth about it.
+        build(context(root = a.parentFile, patched = setOf(":compileJava")), a, warnings = 0)
         assertThat(store.files().map { it.name }).containsExactly("A.java")
+        // A task it depends on compiles as in any build, and the next build would find it up to date.
+        build(context(root = b.parentFile, patched = setOf(":compileJava")), b, task = ":lib:compileJava")
+        assertThat(store.files().map { it.name }).containsExactlyInAnyOrder("A.java", "B.java")
+        // Before Gradle 9.7 a fix build patches every task.
+        assertThat(build(context(version = "9.6", patched = setOf(":compileJava")), javaFile("C"), task = ":lib:compileJava")).isZero()
     }
 
     fun `test says Gradle is too old only when Run Error Prone was asked for`() {
@@ -129,10 +134,10 @@ class ErrorProneGradleExtensionTest : ErrorProneLightTestCase() {
     }
 
     /**
-     * Runs one Gradle execution through the extension: `:compileJava` reports [warnings] diagnostics in
-     * [file] and finishes in full. Returns how many listeners the extension attached.
+     * Runs one Gradle execution through the extension: [task] reports [warnings] diagnostics in [file] and
+     * finishes in full. Returns how many listeners the extension attached.
      */
-    private fun build(context: GradleExecutionContext, file: File, warnings: Int = 1): Int {
+    private fun build(context: GradleExecutionContext, file: File, warnings: Int = 1, task: String = ":compileJava"): Int {
         val listeners = mutableListOf<ProgressListener>()
         val operation = Proxy.newProxyInstance(javaClass.classLoader, arrayOf(LongRunningOperation::class.java)) { proxy, method, args ->
             if (method.name == "addProgressListener" && args[0] is ProgressListener) listeners += args[0] as ProgressListener
@@ -141,8 +146,8 @@ class ErrorProneGradleExtensionTest : ErrorProneLightTestCase() {
 
         extension.configureOperation(operation, context)
         for (listener in listeners) {
-            repeat(warnings) { listener.statusChanged(problem(file.path, ":compileJava")) }
-            listener.statusChanged(finished(":compileJava"))
+            repeat(warnings) { listener.statusChanged(problem(file.path, task)) }
+            listener.statusChanged(finished(task))
         }
         return listeners.size
     }
@@ -152,8 +157,8 @@ class ErrorProneGradleExtensionTest : ErrorProneLightTestCase() {
         version: String = "9.7",
         root: File = Files.createTempDirectory("errorprone-build").toFile(),
         runErrorProne: Boolean = false,
-        patchBuild: Boolean = false,
-    ): GradleExecutionContext = FakeContext(project, type, version, root, runErrorProne, patchBuild)
+        patched: Set<String>? = null,
+    ): GradleExecutionContext = FakeContext(project, type, version, root, runErrorProne, patched)
 
     private class FakeContext(
         override val project: Project,
@@ -161,14 +166,14 @@ class ErrorProneGradleExtensionTest : ErrorProneLightTestCase() {
         version: String,
         root: File,
         runErrorProne: Boolean,
-        patchBuild: Boolean,
+        patched: Set<String>?,
     ) : UserDataHolderBase(), GradleExecutionContext {
         override val projectPath: String = root.path
         override val taskId: ExternalSystemTaskId = ExternalSystemTaskId.create(GradleConstants.SYSTEM_ID, type, project)
         override val settings: GradleExecutionSettings =
             GradleExecutionSettings().apply {
                 if (runErrorProne) putUserData(RUN_ERROR_PRONE, true)
-                if (patchBuild) putUserData(PATCH_BUILD, true)
+                if (patched != null) putUserData(PATCH_BUILD, patched)
             }
         override val listener: ExternalSystemTaskNotificationListener = object : ExternalSystemTaskNotificationListener {}
         override val cancellationToken: CancellationToken = GradleConnector.newCancellationTokenSource().token()
