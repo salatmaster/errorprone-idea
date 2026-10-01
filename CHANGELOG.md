@@ -6,6 +6,8 @@ All notable changes to this plugin are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-10-01
+
 ### Changed
 
 - Change Severity in Gradle…, in the Error Prone tab, and Show How…, in the notification about javac's
@@ -108,7 +110,8 @@ All notable changes to this plugin are documented here. The format follows
 - A diagnostic whose line was deleted, commented out or rewritten is hidden at once instead of
   sliding onto the next line's code.
 
-[unreleased]: https://github.com/salatmaster/errorprone-idea/compare/v0.3.0...HEAD
+[unreleased]: https://github.com/salatmaster/errorprone-idea/compare/v0.3.1...HEAD
+[0.3.1]: https://github.com/salatmaster/errorprone-idea/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/salatmaster/errorprone-idea/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/salatmaster/errorprone-idea/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/salatmaster/errorprone-idea/releases/tag/v0.1.0
