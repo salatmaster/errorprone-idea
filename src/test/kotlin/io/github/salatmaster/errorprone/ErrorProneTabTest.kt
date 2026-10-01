@@ -1,18 +1,31 @@
 package io.github.salatmaster.errorprone
 
+import com.intellij.notification.Notification
+import com.intellij.notification.Notifications
+import com.intellij.openapi.actionSystem.KeyboardShortcut
+import com.intellij.openapi.actionSystem.ex.ActionUtil
 import com.intellij.openapi.application.runReadActionBlocking
 import com.intellij.openapi.command.WriteCommandAction
 import com.intellij.openapi.fileEditor.FileEditorManager
+import com.intellij.openapi.fileEditor.OpenFileDescriptor
+import com.intellij.openapi.ide.CopyPasteManager
+import com.intellij.openapi.ui.TestDialog
+import com.intellij.openapi.ui.TestDialogManager
 import com.intellij.openapi.util.Disposer
 import com.intellij.testFramework.PlatformTestUtil
 import com.intellij.ui.ColoredTreeCellRenderer
 import com.intellij.ui.SearchTextField
 import com.intellij.ui.components.JBTextArea
 import com.intellij.ui.treeStructure.Tree
+import com.intellij.util.text.DateFormatUtil
 import com.intellij.util.ui.UIUtil
 import com.intellij.util.ui.tree.TreeUtil
 import org.assertj.core.api.Assertions.assertThat
+import org.gradle.util.GradleVersion
+import java.awt.datatransfer.DataFlavor
 import javax.swing.JButton
+import javax.swing.JEditorPane
+import javax.swing.JLabel
 import javax.swing.Scrollable
 import javax.swing.tree.DefaultMutableTreeNode
 import javax.swing.tree.TreeSelectionModel
@@ -99,6 +112,10 @@ class ErrorProneTabTest : ErrorProneLightTestCase() {
 
     private fun buttons(tab: ErrorProneTab) = UIUtil.findComponentsOfType(tab.details, JButton::class.java)
 
+    /** What the details pane says, labels and comments alike. */
+    private fun detailsText(tab: ErrorProneTab) =
+        UIUtil.uiTraverser(tab.details).mapNotNull { (it as? JLabel)?.text ?: (it as? JEditorPane)?.text }.joinToString("\n")
+
     /** Opens the first check and its first file, and selects that file's first diagnostic. */
     private fun selectFirstDiagnostic(tab: ErrorProneTab) {
         tab.tree.expandRow(0)
@@ -106,10 +123,11 @@ class ErrorProneTabTest : ErrorProneLightTestCase() {
         tab.tree.setSelectionRow(2)
     }
 
-    fun `test lists what the store has, follows it, and says when there is nothing`() {
+    fun `test lists what the store has, follows it, and says why there is nothing`() {
         myFixture.configureByText("Many.java", source)
         val tab = tab()
-        waitFor { tab.tree.emptyText.text == "No Error Prone diagnostics" }
+        // The light project links no Gradle build, so running Error Prone is not offered.
+        waitFor { tab.tree.emptyText.text == "No Gradle build is linked to this project" }
 
         commit(CompileOutcome.FULL, diagnostic(line = 2, column = 17))
         waitFor { tab.tree.rowCount == 1 }
@@ -117,7 +135,93 @@ class ErrorProneTabTest : ErrorProneLightTestCase() {
 
         commit(CompileOutcome.FULL)
         waitFor { tab.tree.rowCount == 0 }
-        assertThat(tab.tree.emptyText.text).isEqualTo("No Error Prone diagnostics")
+        assertThat(tab.tree.emptyText.text).isEqualTo("No Gradle build is linked to this project")
+    }
+
+    fun `test shows Error Prone running, then what the run changed`() {
+        myFixture.configureByText("Many.java", source)
+        val tab = tab()
+        commit(CompileOutcome.FULL, diagnostic(line = 2, column = 17), diagnostic(line = 3, column = 18))
+        waitFor { tab.tree.rowCount == 1 }
+        val builds = ErrorProneBuilds.getInstance(project)
+
+        assertThat(builds.startRun(1)).isTrue()
+        // A second click while it runs starts nothing.
+        assertThat(builds.startRun(1)).isFalse()
+        waitFor { tab.status.text.startsWith("Running Error Prone") }
+        commit(CompileOutcome.FULL, diagnostic(line = 2, column = 17))
+        assertThat(builds.finishRun(succeeded = true)).isEqualTo(RunResult(builds.lastRun!!.at, before = 2, after = 1, succeeded = true))
+
+        waitFor { "Run Error Prone at " in tab.status.text }
+        assertThat(tab.status.text).contains("1 fewer").doesNotContain("Running")
+    }
+
+    fun `test sums up a run on the thread Gradle calls back on`() {
+        myFixture.configureByText("Many.java", source)
+        commit(CompileOutcome.FULL, diagnostic(line = 2, column = 17))
+        val builds = ErrorProneBuilds.getInstance(project)
+        assertThat(builds.startRun(1)).isTrue()
+
+        // The task callback runs on a background thread holding no lock.
+        var failure: Throwable? = null
+        thread {
+            try {
+                builds.finishRun(succeeded = true)
+            } catch (e: Throwable) {
+                failure = e
+            }
+        }.join(30_000)
+
+        assertThat(failure).isNull()
+        assertThat(builds.lastRun!!.after).isEqualTo(1)
+    }
+
+    fun `test says what recompiling after an edit waits for`() {
+        myFixture.configureByText("Many.java", source)
+        val tab = tab()
+        commit(CompileOutcome.FULL, diagnostic(line = 2, column = 17))
+        waitFor { tab.tree.rowCount == 1 }
+
+        CompileOnEdit.getInstance(project).waitingFor("Many.java recompiles once its module has no errors")
+        try {
+            waitFor { tab.status.text.startsWith("Many.java recompiles once its module has no errors · ") }
+        } finally {
+            CompileOnEdit.getInstance(project).waitingFor(null)
+        }
+        waitFor { tab.status.text.startsWith("1 diagnostic") }
+    }
+
+    fun `test names the first reason there is nothing to show`() {
+        val ready = Setup(linked = true, errorProne = true, gradle = GradleVersion.version("9.7"), delegated = true)
+        fun reason(setup: Setup, vararg outcomes: CompileOutcome) = emptyState(setup, outcomes.map { TaskRecord(it, 0) })
+
+        assertThat(reason(ready.copy(linked = false, errorProne = false)).text).isEqualTo("No Gradle build is linked to this project")
+        assertThat(reason(ready.copy(linked = false)).text).contains("only Gradle builds")
+        assertThat(reason(ready.copy(gradle = GradleVersion.version("8.12"))).text).contains("Gradle 8.12", "8.14")
+        assertThat(reason(ready.copy(errorProne = false))).isEqualTo(EmptyState("The last Gradle sync found no Error Prone in this build", EmptyAction.GETTING_STARTED))
+        assertThat(reason(ready.copy(delegated = false))).isEqualTo(EmptyState("Build Project uses IntelliJ IDEA's own builder here, which reports nothing to this plugin", EmptyAction.RUN))
+        assertThat(reason(ready)).isEqualTo(EmptyState("No compile has run since the IDE started", EmptyAction.RUN))
+        assertThat(reason(ready, CompileOutcome.NONE).text).contains("up to date")
+        assertThat(reason(ready, CompileOutcome.NONE, CompileOutcome.PARTIAL).text).contains("incremental")
+        assertThat(reason(ready, CompileOutcome.FULL, CompileOutcome.FAILED).text).contains("failed")
+        // A full compile of one task says nothing of another's incremental one.
+        assertThat(reason(ready, CompileOutcome.FULL, CompileOutcome.PARTIAL).text).contains("incremental")
+        assertThat(reason(ready, CompileOutcome.FULL, CompileOutcome.NONE)).isEqualTo(EmptyState("Error Prone found nothing in the last full compile, at ${DateFormatUtil.formatTime(0)}"))
+    }
+
+    fun `test says when a compile failed or javac stopped at its limit`() {
+        myFixture.configureByText("Many.java", source)
+        val tab = tab()
+        commit(CompileOutcome.FULL, diagnostic(line = 2, column = 17))
+        waitFor { tab.tree.rowCount == 1 }
+        selectFirstDiagnostic(tab)
+        assertThat(detailsText(tab)).contains("Reported by :compileJava at ")
+
+        commit(CompileOutcome.FAILED)
+        store.capped(":compileJava")
+
+        waitFor { "1 compile failed" in tab.status.text && "javac's limit" in tab.status.text }
+        assertThat(tab.status.toolTipText).contains(":compileJava failed at ")
     }
 
     fun `test the selected diagnostic leads to its code as it is now, and offers what can be done`() {

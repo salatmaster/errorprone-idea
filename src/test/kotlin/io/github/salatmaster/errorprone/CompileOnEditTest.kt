@@ -3,6 +3,7 @@ package io.github.salatmaster.errorprone
 import com.intellij.openapi.application.runReadActionBlocking
 import com.intellij.openapi.command.WriteCommandAction
 import com.intellij.openapi.vfs.VirtualFile
+import com.intellij.testFramework.PlatformTestUtil
 import org.assertj.core.api.Assertions.assertThat
 
 class CompileOnEditTest : ErrorProneLightTestCase() {
@@ -12,6 +13,7 @@ class CompileOnEditTest : ErrorProneLightTestCase() {
     override fun tearDown() {
         try {
             ErrorProneSettings.getInstance().compileOnEdit = true
+            ErrorProneSettings.getInstance().compileOnAnyEdit = false
         } finally {
             super.tearDown()
         }
@@ -51,6 +53,18 @@ class CompileOnEditTest : ErrorProneLightTestCase() {
         assertThat(pending).doesNotContain(file)
     }
 
+    fun `test an edit anywhere in Java code schedules its file when asked to`() {
+        val file = myFixture.configureByText("Fresh.java", source).virtualFile
+        fun type() = WriteCommandAction.runWriteCommandAction(project) { myFixture.editor.document.insertString(0, " ") }
+
+        type()
+        assertThat(pending).doesNotContain(file)
+
+        ErrorProneSettings.getInstance().compileOnAnyEdit = true
+        type()
+        assertThat(pending).contains(file)
+    }
+
     fun `test nothing is scheduled while it is off`() {
         ErrorProneSettings.getInstance().compileOnEdit = false
 
@@ -67,6 +81,25 @@ class CompileOnEditTest : ErrorProneLightTestCase() {
         val compilable = runReadActionBlocking { CompileOnEdit.getInstance(project).compilable(listOf(broken, clean)) }
 
         assertThat(compilable).containsExactly(clean)
+    }
+
+    fun `test says which files wait for their modules to compile`() {
+        val one = myFixture.addFileToProject("One.java", "class One {}\n").virtualFile
+        val two = myFixture.addFileToProject("Two.java", "class Two {}\n").virtualFile
+
+        assertThat(heldBackText(listOf(one))).isEqualTo("One.java recompiles once its module has no errors")
+        assertThat(heldBackText(listOf(one, two))).isEqualTo("One.java and 1 more file recompile once their modules have no errors")
+    }
+
+    fun `test keeps a file with errors waiting, and says so`() {
+        val broken = myFixture.configureByText("Waits.java", "class Waits {\n  int f() { return }\n}\n").virtualFile
+        val compile = CompileOnEdit.getInstance(project)
+
+        compile.schedule(listOf(broken))
+
+        PlatformTestUtil.waitWithEventsDispatching("the edit was not looked at", { compile.waiting != null }, 10)
+        assertThat(compile.waiting).isEqualTo("Waits.java recompiles once its module has no errors")
+        assertThat(pending).contains(broken)
     }
 
     fun `test names the compile task of a source set as Gradle does`() {

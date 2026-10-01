@@ -10,9 +10,24 @@ All notable changes to this plugin are documented here. The format follows
 
 - Alt+Enter previews Error Prone's fix: the line as the fix will write it, before the build that writes
   the whole fix runs.
+- Settings | Tools | Error Prone can have any edit of Java code recompiled, not only one near a
+  diagnostic, so new code gets Error Prone's findings without a build. Off by default.
+- A diagnostic's tooltip and details say which compile reported it and when, and that it may be out of
+  date once a later compile of that task failed. The Error Prone tab's status line counts failed
+  compiles and tasks where javac stopped at its 100-warning limit.
+- An empty Error Prone tab says why: no Gradle build, a Gradle older than 8.14, no Error Prone in the
+  build as of the last sync, IntelliJ IDEA's own builder, only up-to-date or incremental compiles so far,
+  a failed compile, or a clean one. It offers Run Error Prone only where that can help.
 
 ### Changed
 
+- Run Error Prone cannot be started twice at once. The Error Prone tab shows it running, then how many
+  diagnostics the run added or removed, and comes forward in place of the Build window once the run
+  succeeds.
+- Recompiling after an edit says in the Error Prone tab when it waits, for another Gradle build or for
+  its module to have no errors.
+- After a build, only the files open in an editor are highlighted again: a build that reports on
+  thousands of files no longer loads each of them to do it.
 - Applying a fix recompiles only the task that reported it, rather than every module it depends on in
   full, which in a large build was most of the wait.
 - Suppress names the declaration it annotates and picks the narrowest, a local variable or a parameter

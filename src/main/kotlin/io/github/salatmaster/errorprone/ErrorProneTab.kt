@@ -15,6 +15,7 @@ import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.application.ModalityState
 import com.intellij.openapi.application.ReadAction
 import com.intellij.openapi.command.WriteCommandAction
+import com.intellij.openapi.components.serviceIfCreated
 import com.intellij.openapi.editor.ex.util.EditorUtil
 import com.intellij.openapi.fileEditor.OpenFileDescriptor
 import com.intellij.openapi.ide.CopyPasteManager
@@ -59,6 +60,8 @@ class ErrorProneProblemsTabProvider(private val project: Project) : ProblemsView
     override fun create(): ProblemsViewTab = ErrorProneTab(project)
 }
 
+private const val GETTING_STARTED_URL = "https://github.com/salatmaster/errorprone-idea#getting-started"
+
 /** The node the Error Prone tab has selected, for its context menu. */
 private val SELECTED_NODE = DataKey.create<TabNode>("ErrorProne.TabNode")
 
@@ -74,6 +77,9 @@ internal class ErrorProneTab(private val project: Project) :
     private val properties = PropertiesComponent.getInstance(project)
     private var view = loadView(properties)
     private var items: List<TabItem> = emptyList()
+
+    /** Why there is nothing to show, read with [items] when there is not. */
+    private var empty = EmptyState("")
 
     private val model = DefaultTreeModel(DefaultMutableTreeNode())
     internal val tree = Tree(model).apply {
@@ -127,11 +133,15 @@ internal class ErrorProneTab(private val project: Project) :
      * (the Gradle event thread, an edit) and often, hence coalesced.
      */
     fun refresh() {
-        ReadAction.nonBlocking<List<TabItem>> { collectItems(project) }
+        ReadAction.nonBlocking<Pair<List<TabItem>, EmptyState?>> {
+            val items = collectItems(project)
+            items to if (items.isEmpty()) emptyState(setupOf(project), ErrorProneDiagnostics.getInstance(project).records().values) else null
+        }
             .expireWith(this)
             .coalesceBy(this)
-            .finishOnUiThread(ModalityState.any()) {
-                items = it
+            .finishOnUiThread(ModalityState.any()) { (items, empty) ->
+                this.items = items
+                empty?.let { this.empty = it }
                 rebuild()
             }
             .submit(AppExecutorUtil.getAppExecutorService())
@@ -159,17 +169,50 @@ internal class ErrorProneTab(private val project: Project) :
             tree.setSelectionRow(selectedRow.coerceIn(0, tree.rowCount - 1))
         }
         val shown = items.filter(view::shows)
+        val store = ErrorProneDiagnostics.getInstance(project)
+        val failed = store.records().filterValues { it.outcome == CompileOutcome.FAILED }
+        val capped = store.records().filterValues { it.capped }
+        val builds = ErrorProneBuilds.getInstance(project)
+        val run = builds.lastRun
+        val update = store.lastUpdate
+        status.icon = if (builds.running) AnimatedIcon.Default.INSTANCE else null
         status.text = buildString {
+            if (builds.running) append("Running Error Prone… · ")
+            project.serviceIfCreated<CompileOnEdit>()?.waiting?.let { append(it).append(" · ") }
             append(if (shown.size == items.size) count(items.size, "diagnostic") else "${shown.size} of ${count(items.size, "diagnostic")}")
             append(" · ").append(count(shown.distinctBy { it.diagnostic.check }.size, "check"))
-            ErrorProneDiagnostics.getInstance(project).lastUpdate?.let { (task, time) ->
-                append(" · updated by ${task.substringAfterLast('|')} at ${DateFormatUtil.formatTime(time)}")
+            if (run != null && (update == null || run.at >= update.second)) {
+                append(" · Run Error Prone at ${DateFormatUtil.formatTime(run.at)}: ")
+                append(
+                    when {
+                        run.after < run.before -> "${run.before - run.after} fewer than before"
+                        run.after > run.before -> "${run.after - run.before} more than before"
+                        else -> "as many as before"
+                    }
+                )
+            } else if (update != null) {
+                append(" · updated by ${update.first.substringAfterLast('|')} at ${DateFormatUtil.formatTime(update.second)}")
             }
+            if (failed.isNotEmpty()) append(" · ${count(failed.size, "compile")} failed")
+            if (capped.isNotEmpty()) append(" · ${count(capped.size, "task")} at javac's limit")
         }
+        // What the exceptions are about, which the line has no room for.
+        status.toolTipText = (
+            failed.map { (task, record) ->
+                "${task.substringAfterLast('|')} failed at ${DateFormatUtil.formatTime(record.at)}: Error Prone reports nothing once " +
+                    "javac finds an error, so what it reported there before may be out of date."
+            } + capped.map { (task, _) ->
+                "javac stopped at $JAVAC_MAX_WARNINGS warnings in ${task.substringAfterLast('|')}, so some of Error Prone's findings there are missing."
+            }
+        ).takeIf { it.isNotEmpty() }?.joinToString("<br>", "<html>", "</html>") { StringUtil.escapeXmlEntities(it) }
         if (items.isEmpty()) {
-            // Before any build and after a clean one alike.
-            tree.emptyText.text = "No Error Prone diagnostics"
-            tree.emptyText.appendLine("Run Error Prone", SimpleTextAttributes.LINK_PLAIN_ATTRIBUTES) { runErrorProne(project) }
+            tree.emptyText.text = empty.text
+            when (empty.action) {
+                EmptyAction.RUN -> tree.emptyText.appendLine("Run Error Prone", SimpleTextAttributes.LINK_PLAIN_ATTRIBUTES) { locked { runErrorProne(project) } }
+                EmptyAction.GETTING_STARTED ->
+                    tree.emptyText.appendLine("How to add it", SimpleTextAttributes.LINK_PLAIN_ATTRIBUTES) { BrowserUtil.browse(GETTING_STARTED_URL) }
+                null -> {}
+            }
         } else {
             tree.emptyText.text = "Nothing matches"
             tree.emptyText.appendLine("Clear filter", SimpleTextAttributes.LINK_PLAIN_ATTRIBUTES) {
@@ -230,6 +273,7 @@ internal class ErrorProneTab(private val project: Project) :
                     button("Suppress") { locked { suppress(item) } }
                 }
                 diagnostic.link?.let { row { browserLink("Documentation", it) } }
+                row { comment(StringUtil.escapeXmlEntities(freshnessOf(item.located, ErrorProneDiagnostics.getInstance(project).records()) + ".")) }
             }
             is CheckNode -> {
                 heading(node.check, node.severity)

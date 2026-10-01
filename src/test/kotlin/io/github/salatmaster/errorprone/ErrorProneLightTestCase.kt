@@ -4,6 +4,8 @@ import com.intellij.openapi.util.Disposer
 import com.intellij.openapi.vfs.VirtualFile
 import com.intellij.testFramework.PsiTestUtil
 import com.intellij.testFramework.fixtures.BasePlatformTestCase
+import java.io.File
+import java.nio.file.Files
 
 /**
  * Base for tests against the light project fixture.
@@ -67,6 +69,10 @@ abstract class ErrorProneLightTestCase : BasePlatformTestCase() {
         }
         return myFixture.addFileToProject("build/generated/java/$name", text).virtualFile
     }
+
+    /** A directory on disk for this test alone, deleted with it. */
+    protected fun tempDir(): File = Files.createTempDirectory("errorprone").toFile()
+        .also { dir -> Disposer.register(testRootDisposable) { dir.deleteRecursively() } }
 
     /** Commits [diagnostics] for the file open in the fixture, as `:compileJava` finishing would. */
     protected fun commit(outcome: CompileOutcome, vararg diagnostics: ErrorProneDiagnostic) {

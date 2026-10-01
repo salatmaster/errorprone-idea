@@ -1,11 +1,17 @@
 package io.github.salatmaster.errorprone
 
 import com.intellij.codeHighlighting.HighlightDisplayLevel
+import com.intellij.compiler.CompilerConfiguration
 import com.intellij.ide.util.PropertiesComponent
 import com.intellij.openapi.editor.Document
+import com.intellij.openapi.module.ModuleManager
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.roots.ProjectFileIndex
 import com.intellij.openapi.vfs.VirtualFile
+import com.intellij.util.text.DateFormatUtil
+import org.gradle.util.GradleVersion
+import org.jetbrains.plugins.gradle.settings.GradleProjectSettings
+import org.jetbrains.plugins.gradle.settings.GradleSettings
 import javax.swing.Icon
 import javax.swing.tree.DefaultMutableTreeNode
 
@@ -138,3 +144,61 @@ internal val ErrorProneSeverity.icon: Icon
         ErrorProneSeverity.WARNING -> HighlightDisplayLevel.WARNING.icon
         ErrorProneSeverity.NOTE -> HighlightDisplayLevel.WEAK_WARNING.icon
     }
+
+/**
+ * What the project's setup says about where diagnostics could come from: whether a Gradle build is
+ * [linked], whether the last sync found Error Prone in any module's compiler settings, the oldest
+ * [gradle] a linked build uses, and whether Build Project goes through Gradle for any of them.
+ */
+internal data class Setup(val linked: Boolean, val errorProne: Boolean, val gradle: GradleVersion?, val delegated: Boolean)
+
+/**
+ * Reads [Setup] from the settings the last sync imported, with no build. Error Prone shows in a module's
+ * javac options (`-Xplugin:ErrorProne`) and its annotation processor path. Call off the EDT, in a read
+ * action: the Gradle version may be read from the wrapper's properties.
+ */
+internal fun setupOf(project: Project): Setup {
+    val linked = GradleSettings.getInstance(project).linkedProjectsSettings
+    val compiler = CompilerConfiguration.getInstance(project)
+    val errorProne = ModuleManager.getInstance(project).modules.any { module ->
+        compiler.getAdditionalOptions(module).any { "-Xplugin:ErrorProne" in it } ||
+            "error_prone_core" in compiler.getAnnotationProcessingConfiguration(module).processorPath
+    }
+    return Setup(
+        linked = linked.isNotEmpty(),
+        errorProne = errorProne,
+        gradle = linked.mapNotNull { it.resolveGradleVersion() }.minOrNull(),
+        delegated = linked.any { GradleProjectSettings.isDelegatedBuildEnabled(project, it.externalProjectPath) },
+    )
+}
+
+internal enum class EmptyAction { RUN, GETTING_STARTED }
+
+/** What the Error Prone tab says when it has nothing to show, and the one thing to do about it. */
+internal data class EmptyState(val text: String, val action: EmptyAction? = null)
+
+/**
+ * Why there is nothing to show, the first reason that applies: the setup first, then what the compile
+ * tasks' last runs this session ([records]) came to.
+ */
+internal fun emptyState(setup: Setup, records: Collection<TaskRecord>): EmptyState = when {
+    !setup.linked && setup.errorProne -> EmptyState("Error Prone runs in this project's build, but only Gradle builds are read")
+    !setup.linked -> EmptyState("No Gradle build is linked to this project")
+    setup.gradle != null && setup.gradle < ErrorProneGradleExtension.MIN_GRADLE_VERSION -> EmptyState(
+        "This project builds with Gradle ${setup.gradle.version}; Error Prone diagnostics need " +
+            "Gradle ${ErrorProneGradleExtension.MIN_GRADLE_VERSION.version} or newer",
+    )
+    !setup.errorProne -> EmptyState("The last Gradle sync found no Error Prone in this build", EmptyAction.GETTING_STARTED)
+    records.any { it.outcome == CompileOutcome.FAILED } ->
+        EmptyState("A compile failed, and Error Prone reports nothing once javac finds an error")
+    // One task's incremental compile leaves its other files unchecked, however fully another task compiled.
+    records.any { it.outcome == CompileOutcome.PARTIAL } ->
+        EmptyState("Some compiles were incremental, which report only on the files they recompile", EmptyAction.RUN)
+    records.any { it.outcome == CompileOutcome.FULL } -> EmptyState(
+        "Error Prone found nothing in the last full compile, at " +
+            DateFormatUtil.formatTime(records.filter { it.outcome == CompileOutcome.FULL }.maxOf { it.at }),
+    )
+    !setup.delegated -> EmptyState("Build Project uses IntelliJ IDEA's own builder here, which reports nothing to this plugin", EmptyAction.RUN)
+    records.isEmpty() -> EmptyState("No compile has run since the IDE started", EmptyAction.RUN)
+    else -> EmptyState("Every compile since the IDE started was up to date, and reported nothing", EmptyAction.RUN)
+}

@@ -8,8 +8,11 @@ import com.intellij.openapi.components.Storage
 import com.intellij.openapi.components.service
 import com.intellij.openapi.options.BoundConfigurable
 import com.intellij.openapi.ui.DialogPanel
+import com.intellij.ui.components.JBCheckBox
+import com.intellij.ui.dsl.builder.Cell
 import com.intellij.ui.dsl.builder.bindSelected
 import com.intellij.ui.dsl.builder.panel
+import com.intellij.ui.dsl.builder.selected
 
 /** The plugin's settings, the same for every project; see [ErrorProneConfigurable]. */
 @Service(Service.Level.APP)
@@ -18,6 +21,7 @@ class ErrorProneSettings : SimplePersistentStateComponent<ErrorProneSettings.Opt
 
     class Options : BaseState() {
         var compileOnEdit by property(true)
+        var compileOnAnyEdit by property(false)
     }
 
     /** Whether an edit near an Error Prone diagnostic recompiles its file in the background; see [CompileOnEdit]. */
@@ -25,6 +29,13 @@ class ErrorProneSettings : SimplePersistentStateComponent<ErrorProneSettings.Opt
         get() = state.compileOnEdit
         set(value) {
             state.compileOnEdit = value
+        }
+
+    /** Whether any edit of Java code recompiles it, not only one near a diagnostic; see [CompileOnEdit]. */
+    var compileOnAnyEdit: Boolean
+        get() = state.compileOnAnyEdit
+        set(value) {
+            state.compileOnAnyEdit = value
         }
 
     companion object {
@@ -36,8 +47,9 @@ class ErrorProneSettings : SimplePersistentStateComponent<ErrorProneSettings.Opt
 class ErrorProneConfigurable : BoundConfigurable("Error Prone") {
     override fun createPanel(): DialogPanel = panel {
         val settings = ErrorProneSettings.getInstance()
+        lateinit var compileOnEdit: Cell<JBCheckBox>
         row {
-            checkBox("Recompile after editing code Error Prone reported on")
+            compileOnEdit = checkBox("Recompile after editing code Error Prone reported on")
                 .bindSelected(settings::compileOnEdit)
                 .comment(
                     "Two seconds after you stop typing in a line, method or field that has an Error Prone " +
@@ -45,6 +57,14 @@ class ErrorProneConfigurable : BoundConfigurable("Error Prone") {
                         "set in the background, with no build output: a warning you fixed goes away, and the " +
                         "others stay current.",
                 )
+        }
+        indent {
+            row {
+                checkBox("After any edit of Java code, too")
+                    .bindSelected(settings::compileOnAnyEdit)
+                    .enabledIf(compileOnEdit.selected)
+                    .comment("New code gets Error Prone's findings without a build, at the cost of a compile after every pause in typing.")
+            }
         }
     }
 }

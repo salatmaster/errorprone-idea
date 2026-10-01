@@ -96,6 +96,7 @@ class ErrorProneGradleExtension : GradleExecutionHelperExtension {
                 },
                 onJavacLimit = { task ->
                     if (patched != null && task in patched) return@ErrorProneBuildListener
+                    store.capped("$build|$task")
                     project.service<ErrorProneNotifier>().once(
                         "javac-limit",
                         "javac reported only the first $JAVAC_MAX_WARNINGS warnings of $task, so some of Error " +

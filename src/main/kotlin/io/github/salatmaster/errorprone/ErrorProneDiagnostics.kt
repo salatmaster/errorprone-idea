@@ -11,6 +11,7 @@ import com.intellij.openapi.components.service
 import com.intellij.openapi.editor.Document
 import com.intellij.openapi.editor.RangeMarker
 import com.intellij.openapi.fileEditor.FileDocumentManager
+import com.intellij.openapi.fileEditor.FileEditorManager
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.startup.ProjectActivity
 import com.intellij.openapi.util.TextRange
@@ -18,6 +19,7 @@ import com.intellij.openapi.vfs.VirtualFile
 import com.intellij.openapi.vfs.VirtualFileManager
 import com.intellij.psi.PsiManager
 import com.intellij.util.messages.Topic
+import com.intellij.util.text.DateFormatUtil
 import org.jetbrains.annotations.TestOnly
 import java.util.concurrent.Callable
 
@@ -44,7 +46,26 @@ enum class CompileOutcome {
  * [range] was read, for whoever needs the position later (the Problems tab navigates with it).
  * [task] is the store's key for what reported it: the build root and the task path, split by `|`.
  */
-data class Located(val diagnostic: ErrorProneDiagnostic, val range: TextRange, val marker: RangeMarker, val task: String)
+data class Located(val diagnostic: ErrorProneDiagnostic, val range: TextRange, val marker: RangeMarker, val task: String, val reported: Long? = null)
+
+/** How a compile task's last run this session ended, [at] when, and whether javac stopped at its warning limit. */
+data class TaskRecord(val outcome: CompileOutcome, val at: Long, val capped: Boolean = false)
+
+/**
+ * Which build reported [located] and when, and whether a compile of its task has failed since, which
+ * says nothing about it: Error Prone reports nothing once javac finds an error.
+ */
+internal fun freshnessOf(located: Located, records: Map<String, TaskRecord>): String {
+    val task = located.task.substringAfterLast('|')
+    val reported = located.reported
+    val record = records[located.task]
+    return buildString {
+        append(if (reported == null) "Reported by $task before the IDE restarted" else "Reported by $task at ${DateFormatUtil.formatTime(reported)}")
+        if (record?.outcome == CompileOutcome.FAILED && (reported == null || record.at > reported)) {
+            append(". A later compile of $task failed, so this may be out of date")
+        }
+    }
+}
 
 fun interface ErrorProneDiagnosticsListener {
     fun diagnosticsChanged()
@@ -100,7 +121,8 @@ class ErrorProneDiagnostics(private val project: Project) : PersistentStateCompo
         var dismissed = false
     }
 
-    private class FileEntry(val file: VirtualFile, val recordedAt: Long, val items: List<Anchored>)
+    /** [reported] is when a build of this session reported [items], null for what the last session left. */
+    private class FileEntry(val file: VirtualFile, val recordedAt: Long, val items: List<Anchored>, val reported: Long? = recordedAt)
 
     private val lock = Any()
 
@@ -116,6 +138,29 @@ class ErrorProneDiagnostics(private val project: Project) : PersistentStateCompo
     @Volatile
     var lastUpdate: Pair<String, Long>? = null
         private set
+
+    /** How each compile task's last run this session ended, keyed as [byTask] is. Not kept across restarts. */
+    @Volatile
+    private var records: Map<String, TaskRecord> = emptyMap()
+
+    /** The last time handed out by [tick]. */
+    private var lastTick = 0L
+
+    fun records(): Map<String, TaskRecord> = records
+
+    /** javac stopped at its warning limit in [task]'s last run, which reported only some of Error Prone's findings. */
+    fun capped(task: String) {
+        synchronized(lock) {
+            val record = records[task] ?: return
+            records = records + (task to record.copy(capped = true))
+        }
+        project.messageBus.syncPublisher(TOPIC).diagnosticsChanged()
+    }
+
+    /** Now, and always later than the last time it said: a record and the entries of one commit compare by it. */
+    private fun tick(): Long = synchronized(lock) {
+        maxOf(System.currentTimeMillis(), lastTick + 1).also { lastTick = it }
+    }
 
     override fun getState(): Saved = Saved().apply {
         for ((task, entries) in byTask) {
@@ -154,7 +199,7 @@ class ErrorProneDiagnostics(private val project: Project) : PersistentStateCompo
                 val document = FileDocumentManager.getInstance().getDocument(file) ?: continue
                 val items = savedFile.diagnostics.mapNotNull { it.toAnchored(document) }
                 if (items.isNotEmpty()) {
-                    byTaskRestored.getOrPut(savedFile.task) { HashMap() }[file.path] = FileEntry(file, savedFile.timeStamp, items)
+                    byTaskRestored.getOrPut(savedFile.task) { HashMap() }[file.path] = FileEntry(file, savedFile.timeStamp, items, reported = null)
                 }
             }
             byTaskRestored
@@ -178,11 +223,18 @@ class ErrorProneDiagnostics(private val project: Project) : PersistentStateCompo
      * on one thread, which is what keeps commits in build order.
      */
     fun commit(task: String, outcome: CompileOutcome, diagnostics: Map<VirtualFile, List<ErrorProneDiagnostic>>) {
-        if (outcome == CompileOutcome.NONE) return
+        val now = tick()
+        // ponytail: tells a compile task by its name, as Gradle names its own; another JavaCompile counts
+        // once it reports something.
+        val recorded = isCompileTask(task) || diagnostics.isNotEmpty()
+        if (recorded) synchronized(lock) { records = records + (task to TaskRecord(outcome, now)) }
         // Every task of every build ends up here, and nearly all of them never reported anything.
-        if (diagnostics.isEmpty() && task !in byTask) return
+        if (outcome == CompileOutcome.NONE || (diagnostics.isEmpty() && task !in byTask)) {
+            // An up-to-date or a clean compile changes no diagnostic, but what the tab says about it.
+            if (recorded) project.messageBus.syncPublisher(TOPIC).diagnosticsChanged()
+            return
+        }
 
-        val now = System.currentTimeMillis()
         val fresh = nonBlockingRead { anchor(diagnostics, now) }
         val changed = HashSet<VirtualFile>()
         synchronized(lock) {
@@ -204,13 +256,18 @@ class ErrorProneDiagnostics(private val project: Project) : PersistentStateCompo
             byTask = if (merged.isEmpty()) byTask - task else byTask + (task to merged)
         }
         if (changed.isNotEmpty()) lastUpdate = task to now
+        // What the task reported before stays, and its tooltips now say that the task failed since.
+        if (outcome == CompileOutcome.FAILED) byTask[task]?.values?.mapTo(changed) { it.file }
         refresh(changed)
+        if (changed.isEmpty() && recorded) project.messageBus.syncPublisher(TOPIC).diagnosticsChanged()
     }
 
     /** The diagnostics of [file] whose code still exists, at their current ranges. Call in a read action. */
     fun forFile(file: VirtualFile): List<Located> =
-        byTask.flatMap { (task, entries) -> entries[file.path]?.shown().orEmpty().map { task to it } }
-            .map { (task, item) -> Located(item.diagnostic, item.marker.textRange, item.marker, task) }
+        byTask.flatMap { (task, entries) ->
+            val entry = entries[file.path] ?: return@flatMap emptyList()
+            entry.shown().map { Located(it.diagnostic, it.marker.textRange, it.marker, task, entry.reported) }
+        }
 
     /** Where the diagnostics of [file] are, those an edit has hidden included: what an edit near them re-checks. */
     fun markersIn(file: VirtualFile): List<RangeMarker> =
@@ -226,7 +283,8 @@ class ErrorProneDiagnostics(private val project: Project) : PersistentStateCompo
      * this every half a second. Call in a read action.
      */
     fun hasFix(accept: (VirtualFile) -> Boolean): Boolean =
-        byTask.values.asSequence().flatMap { it.values }.any { entry -> entry.shown().any { it.diagnostic.fixable } && accept(entry.file) }
+        byTask.values.asSequence().flatMap { it.values }
+            .any { entry -> entry.items.any { it.diagnostic.fixable && entry.isShown(it) } && accept(entry.file) }
 
     /**
      * Hides the diagnostics at [markers] without waiting for a build, or with [dismissed] false shows
@@ -248,20 +306,24 @@ class ErrorProneDiagnostics(private val project: Project) : PersistentStateCompo
     fun files(): Set<VirtualFile> =
         byTask.values.flatMap { it.values }.filter { it.file.isValid && it.shown().isNotEmpty() }.map { it.file }.toSet()
 
-    fun count(): Int = byTask.values.sumOf { entries -> entries.values.sumOf { it.shown().size } }
+    /** How many diagnostics show; takes the read lock it needs, from any thread. */
+    fun count(): Int = nonBlockingRead { byTask.values.sumOf { entries -> entries.values.sumOf { it.shown().size } } }
 
     /**
      * What to show: a diagnostic goes while its line reads differently from the build's (deleted,
      * commented out, rewritten), until a build says what holds now. A deletion that starts at the
      * token leaves the marker valid, on the next line's code, so validity alone would move it there.
      */
-    private fun FileEntry.shown(): List<Anchored> =
-        items.filter { it.marker.isValid && !it.dismissed && lineAt(it.marker.document, it.marker.startOffset) == it.line }
+    private fun FileEntry.shown(): List<Anchored> = items.filter { isShown(it) }
+
+    private fun FileEntry.isShown(item: Anchored): Boolean =
+        item.marker.isValid && !item.dismissed && lineAt(item.marker.document, item.marker.startOffset) == item.line
 
     @TestOnly
     fun clear() {
         saved = null
         lastUpdate = null
+        records = emptyMap()
         synchronized(lock) {
             byTask.values.forEach { entries -> entries.values.forEach { entry -> entry.items.forEach { it.marker.dispose() } } }
             byTask = emptyMap()
@@ -283,13 +345,14 @@ class ErrorProneDiagnostics(private val project: Project) : PersistentStateCompo
 
     private fun refresh(files: Set<VirtualFile>) {
         if (files.isEmpty()) return
-        // Inside the read action: restart reads the file's document, which for a file no editor has
-        // open means loading it through FileDocumentManager.
-        nonBlockingRead {
-            val daemon = DaemonCodeAnalyzer.getInstance(project)
-            files.filter { it.isValid }
-                .mapNotNull { PsiManager.getInstance(project).findFile(it) }
-                .forEach { daemon.restart(it, "Error Prone diagnostics changed") }
+        // Only what an editor shows: a build can report on thousands of files, each of which would get a
+        // PSI made just to be re-highlighted. Inspect Code reads the store afresh anyway.
+        val open = files.filter { it.isValid && FileEditorManager.getInstance(project).isFileOpen(it) }
+        if (open.isNotEmpty()) {
+            nonBlockingRead {
+                val daemon = DaemonCodeAnalyzer.getInstance(project)
+                open.mapNotNull { PsiManager.getInstance(project).findFile(it) }.forEach { daemon.restart(it, "Error Prone diagnostics changed") }
+            }
         }
         project.messageBus.syncPublisher(TOPIC).diagnosticsChanged()
     }
@@ -324,6 +387,10 @@ class ErrorProneDiagnostics(private val project: Project) : PersistentStateCompo
         fun getInstance(project: Project): ErrorProneDiagnostics = project.service()
     }
 }
+
+/** Whether [task], a store key or a task path, names a compile task of Java code as Gradle names them. */
+internal fun isCompileTask(task: String): Boolean =
+    task.substringAfterLast(':').let { it.startsWith("compile") && it.endsWith("Java") }
 
 /**
  * What a task's diagnostics become once it finishes. [old] and [new] map a file path to what the

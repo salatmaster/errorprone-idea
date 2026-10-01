@@ -9,6 +9,8 @@ import com.intellij.openapi.util.TextRange
 import com.intellij.openapi.util.text.StringUtil
 import com.intellij.psi.PsiFile
 import com.intellij.psi.PsiWhiteSpace
+import com.intellij.ui.ColorUtil
+import com.intellij.util.ui.NamedColorUtil
 
 /**
  * Shows the stored Error Prone diagnostics of a Java file in the editor.
@@ -36,12 +38,13 @@ class ErrorProneExternalAnnotator : ExternalAnnotator<List<Located>, List<Locate
         val virtualFile = file.virtualFile ?: return
         // The next generation would undo a fix there.
         val fixable = !isGeneratedCode(file.project, virtualFile)
+        val records = ErrorProneDiagnostics.getInstance(file.project).records()
         for (located in annotationResult) {
             val (diagnostic, range) = located
             if (range.endOffset > file.textLength) continue
             var annotation = holder.newAnnotation(diagnostic.severity.highlight, diagnostic.text)
                 .range(visibleRange(file, range))
-                .tooltip(tooltip(diagnostic))
+                .tooltip(tooltip(diagnostic, freshnessOf(located, records)))
             if (diagnostic.fixable && fixable) annotation = annotation.withFix(ApplyErrorProneFix(located, virtualFile))
             val targets = suppressionTargets(file, range.startOffset).map(::describeTarget)
             val suppress = SuppressErrorProneFix(diagnostic.check, located.marker, targets)
@@ -74,7 +77,7 @@ private fun visibleRange(file: PsiFile, range: TextRange): TextRange {
 }
 
 /** The highlighting tooltip opens http links in the browser (LineTooltipRenderer), so the link needs no intention. */
-private fun tooltip(diagnostic: ErrorProneDiagnostic): String = buildString {
+private fun tooltip(diagnostic: ErrorProneDiagnostic, freshness: String): String = buildString {
     append("<html><b>").append(escape(diagnostic.check)).append("</b> (Error Prone)<br>")
     append(escape(diagnostic.message))
     diagnostic.fixes.forEachIndexed { i, fix ->
@@ -82,6 +85,8 @@ private fun tooltip(diagnostic: ErrorProneDiagnostic): String = buildString {
         append(if (fix.isEmpty()) "remove this line" else "<code>${escape(fix)}</code>")
     }
     diagnostic.link?.let { append("<br><a href=\"").append(escape(it)).append("\">").append(escape(it)).append("</a>") }
+    append("<br><font color=\"").append(ColorUtil.toHtmlColor(NamedColorUtil.getInactiveTextColor())).append("\">")
+    append(escape(freshness)).append("</font>")
     append("</html>")
 }
 

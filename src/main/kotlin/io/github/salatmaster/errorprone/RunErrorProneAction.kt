@@ -4,19 +4,24 @@ import com.intellij.build.BuildViewManager
 import com.intellij.execution.executors.DefaultRunExecutor
 import com.intellij.openapi.actionSystem.ActionUpdateThread
 import com.intellij.openapi.actionSystem.AnActionEvent
+import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.components.Service
 import com.intellij.openapi.components.service
+import com.intellij.openapi.diagnostic.logger
 import com.intellij.openapi.externalSystem.model.execution.ExternalSystemTaskExecutionSettings
 import com.intellij.openapi.externalSystem.service.execution.ExternalSystemRunConfiguration
 import com.intellij.openapi.externalSystem.service.execution.ProgressExecutionMode
 import com.intellij.openapi.externalSystem.task.TaskCallback
 import com.intellij.openapi.externalSystem.util.ExternalSystemUtil
 import com.intellij.openapi.externalSystem.util.task.TaskExecutionSpec
+import com.intellij.openapi.progress.ProcessCanceledException
 import com.intellij.openapi.project.DumbAwareAction
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.util.Key
 import com.intellij.openapi.util.UserDataHolderBase
 import com.intellij.openapi.vfs.VirtualFile
+import com.intellij.openapi.wm.ToolWindowId
+import com.intellij.openapi.wm.ToolWindowManager
 import org.gradle.util.GradleVersion
 import org.jetbrains.plugins.gradle.service.task.GradleTaskManager
 import org.jetbrains.plugins.gradle.settings.GradleSettings
@@ -35,8 +40,9 @@ class RunErrorProneAction : DumbAwareAction() {
 
     override fun update(e: AnActionEvent) {
         val project = e.project
-        e.presentation.isEnabledAndVisible =
-            project != null && GradleSettings.getInstance(project).linkedProjectsSettings.isNotEmpty()
+        e.presentation.isVisible = project != null && GradleSettings.getInstance(project).linkedProjectsSettings.isNotEmpty()
+        // A second one would recompile everything again, in a second Gradle daemon.
+        e.presentation.isEnabled = e.presentation.isVisible && !ErrorProneBuilds.getInstance(project!!).running
     }
 
     override fun actionPerformed(e: AnActionEvent) {
@@ -44,9 +50,54 @@ class RunErrorProneAction : DumbAwareAction() {
     }
 }
 
+/** How a Run Error Prone ended: [at] when, the diagnostics shown [before] and [after] it, and whether every build of it [succeeded]. */
+internal data class RunResult(val at: Long, val before: Int, val after: Int, val succeeded: Boolean)
+
 /** The builds of this plugin that have not finished yet. */
 @Service(Service.Level.PROJECT)
-internal class ErrorProneBuilds {
+internal class ErrorProneBuilds(private val project: Project) {
+
+    /** Gradle builds of the Run Error Prone in progress still running; [before] and [failed] are its so far. */
+    private var pending = 0
+    private var before = 0
+    private var failed = false
+
+    val running: Boolean get() = synchronized(this) { pending > 0 }
+
+    /** How the last Run Error Prone of this session ended. */
+    @Volatile
+    var lastRun: RunResult? = null
+        private set
+
+    /** Starts a Run Error Prone of [builds] Gradle builds, or returns false while one is running. */
+    fun startRun(builds: Int): Boolean {
+        // Counted outside the monitor: it takes a read lock, which may wait.
+        val count = ErrorProneDiagnostics.getInstance(project).count()
+        synchronized(this) {
+            if (pending > 0) return false
+            pending = builds
+            before = count
+            failed = false
+        }
+        changed()
+        return true
+    }
+
+    /** One build of the run ended; returns how the run did once this was its last. */
+    fun finishRun(succeeded: Boolean): RunResult? {
+        val count = ErrorProneDiagnostics.getInstance(project).count()
+        val result = synchronized(this) {
+            if (!succeeded) failed = true
+            if (--pending > 0) return null
+            RunResult(System.currentTimeMillis(), before, count, !failed)
+        }
+        lastRun = result
+        changed()
+        return result
+    }
+
+    private fun changed() = project.messageBus.syncPublisher(ErrorProneDiagnostics.TOPIC).diagnosticsChanged()
+
     private val fixes = ConcurrentHashMap.newKeySet<String>()
 
     /** Whether a build writing [check]'s fix for [file] may start: false while one already runs. */
@@ -132,13 +183,39 @@ internal fun errorProneInitScript(
 /** The first Gradle to give an included build's tasks their path in the build tree, problems included. */
 internal val TREE_PATHS: GradleVersion = GradleVersion.version("9.7")
 
-/** Starts Run Error Prone for every Gradle build linked to [project]. */
+/**
+ * Starts Run Error Prone for every Gradle build linked to [project], unless one is running. Once all of
+ * them succeed, the Problems tool window shows the Error Prone tab in place of the Build one; a failure
+ * leaves the Build window, which says what went wrong.
+ */
 fun runErrorProne(project: Project) {
-    for (linked in GradleSettings.getInstance(project).linkedProjectsSettings) {
-        runGradle(
-            project, linked.externalProjectPath, listOf(ERROR_PRONE_TASK), "Run Error Prone",
-            ERROR_PRONE_INIT_SCRIPT, RUN_ERROR_PRONE, true, activate = true,
-        )
+    val linked = GradleSettings.getInstance(project).linkedProjectsSettings
+    val builds = ErrorProneBuilds.getInstance(project)
+    if (linked.isEmpty() || !builds.startRun(linked.size)) return
+    for (build in linked) {
+        // A build that does not start has told the run so (runGradle); the others go on.
+        try {
+            runGradle(
+                project, build.externalProjectPath, listOf(ERROR_PRONE_TASK), "Run Error Prone",
+                ERROR_PRONE_INIT_SCRIPT, RUN_ERROR_PRONE, true, activate = true,
+            ) { succeeded ->
+                if (builds.finishRun(succeeded)?.succeeded == true) {
+                    ApplicationManager.getApplication().invokeLater({ showErrorProneTab(project) }, project.disposed)
+                }
+            }
+        } catch (e: ProcessCanceledException) {
+            throw e
+        } catch (e: RuntimeException) {
+            logger<ErrorProneBuilds>().warn("Could not start Run Error Prone in ${build.externalProjectPath}", e)
+        }
+    }
+}
+
+/** Brings the Problems tool window forward on its Error Prone tab. */
+internal fun showErrorProneTab(project: Project) {
+    val window = ToolWindowManager.getInstance(project).getToolWindow(ToolWindowId.PROBLEMS_VIEW) ?: return
+    window.show {
+        window.contentManager.contents.firstOrNull { it.component is ErrorProneTab }?.let(window.contentManager::setSelectedContent)
     }
 }
 

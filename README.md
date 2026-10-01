@@ -72,9 +72,9 @@ build stays the source of truth.
 |---|---|
 | <kbd>Alt+Enter</kbd> on a highlight | Apply Error Prone fix, Suppress with `@SuppressWarnings` |
 | <kbd>View</kbd> → <kbd>Tool Windows</kbd> → <kbd>Problems</kbd> → **Error Prone** | Every diagnostic, grouped and filterable |
-| <kbd>Build</kbd> → <kbd>Run Error Prone</kbd> | Recompile every Java source set in full |
+| <kbd>Build</kbd> → <kbd>Run Error Prone</kbd> | Recompile every Java source set in full, then show the Error Prone tab |
 | <kbd>Build</kbd> → <kbd>Apply All Error Prone Fixes…</kbd> | Every fix in a scope, as one patch; also under <kbd>Code</kbd> → <kbd>Analyze Code</kbd> and the Project view's <kbd>Analyze</kbd> |
-| <kbd>Settings</kbd> → <kbd>Tools</kbd> → <kbd>Error Prone</kbd> | Turn background recompiling after edits on or off |
+| <kbd>Settings</kbd> → <kbd>Tools</kbd> → <kbd>Error Prone</kbd> | Recompile in the background after edits near a diagnostic, after any edit of Java code, or never |
 | <kbd>Settings</kbd> → <kbd>Editor</kbd> → <kbd>Inspections</kbd> → **Error Prone** | Turn the highlighting off; <kbd>Code</kbd> → <kbd>Inspect Code</kbd> lists the diagnostics |
 
 ## How it works
@@ -94,9 +94,10 @@ of them survive an IDE restart.
 <details>
 <summary><b>Nothing shows up.</b></summary>
 
-Check that the build runs from the IDE (a terminal `./gradlew build` does not reach it), on Gradle 8.14
-or newer, and that Error Prone is in the build. An up-to-date build compiles nothing and so reports
-nothing: <kbd>Build</kbd> → <kbd>Run Error Prone</kbd> compiles everything again.
+The Error Prone tab says why when it is empty: no Gradle build linked, a Gradle older than 8.14, no Error
+Prone in the build as of the last sync, IntelliJ IDEA's own builder doing Build Project, or compiles that
+were up to date and so reported nothing. Builds run in a terminal (`./gradlew build`) do not reach the
+IDE at all. <kbd>Build</kbd> → <kbd>Run Error Prone</kbd> compiles everything again.
 </details>
 
 <details>
@@ -145,8 +146,9 @@ writes follows it.
   build compiles it.
 - **An incremental build can leave a stale warning** on a file that was recompiled only because a file
   it depends on changed. Run Error Prone clears it.
-- **Recompiling after an edit** follows edits near a diagnostic only, and waits while another Gradle
-  task of the project runs, a long `bootRun` included.
+- **Recompiling after an edit** follows edits near a diagnostic unless set to follow any edit, and
+  waits while another Gradle task of the project runs, a running application or its tests included; the
+  Error Prone tab says so.
 - **A few checks read `@SuppressWarnings` on the class only** (InconsistentCapitalization, for one): when
   a narrower suppression does not hold, the next build shows the diagnostic again, and the class is in the
   Suppress submenu.

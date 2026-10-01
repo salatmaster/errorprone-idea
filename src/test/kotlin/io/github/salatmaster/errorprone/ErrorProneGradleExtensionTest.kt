@@ -31,7 +31,6 @@ import org.jetbrains.plugins.gradle.settings.GradleExecutionSettings
 import org.jetbrains.plugins.gradle.util.GradleConstants
 import java.io.File
 import java.lang.reflect.Proxy
-import java.nio.file.Files
 
 /**
  * The IDE side of the Gradle hook: what the extension does with the context the IDE hands it. The
@@ -93,8 +92,8 @@ class ErrorProneGradleExtensionTest : ErrorProneLightTestCase() {
     }
 
     fun `test writes the javac limit snippet for every project, in the build's own DSL`() {
-        val groovy = Files.createTempDirectory("errorprone-build").toFile()
-        val kotlin = Files.createTempDirectory("errorprone-build").toFile().also { File(it, "settings.gradle.kts").writeText("") }
+        val groovy = tempDir()
+        val kotlin = tempDir().also { File(it, "settings.gradle.kts").writeText("") }
 
         // The task named is often a subproject's, and the root script is where people paste it.
         assertThat(maxWarningsSnippet(groovy)).isEqualTo(
@@ -128,7 +127,7 @@ class ErrorProneGradleExtensionTest : ErrorProneLightTestCase() {
 
     /** A Java file on disk, in a directory of its own that stands for a Gradle build root. */
     private fun javaFile(name: String): File {
-        val root = Files.createTempDirectory("errorprone-build").toFile()
+        val root = tempDir()
         return File(root, "$name.java").apply { writeText("class $name { public String toString() { return \"\"; } }\n") }
             .also { LocalFileSystem.getInstance().refreshAndFindFileByIoFile(it) }
     }
@@ -155,7 +154,7 @@ class ErrorProneGradleExtensionTest : ErrorProneLightTestCase() {
     private fun context(
         type: ExternalSystemTaskType = ExternalSystemTaskType.EXECUTE_TASK,
         version: String = "9.7",
-        root: File = Files.createTempDirectory("errorprone-build").toFile(),
+        root: File = tempDir(),
         runErrorProne: Boolean = false,
         patched: Set<String>? = null,
     ): GradleExecutionContext = FakeContext(project, type, version, root, runErrorProne, patched)

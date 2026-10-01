@@ -108,6 +108,15 @@ class ErrorProneExternalAnnotatorTest : ErrorProneLightTestCase() {
         assertThat(preview.content().toString()).contains("private static final Logger LOG = Logger.create();")
     }
 
+    fun `test says which compile reported a diagnostic, and when a later one failed`() {
+        commit(CompileOutcome.FULL, diagnostic(line = 2, column = 17))
+        assertThat(errorProneHighlights().single().toolTip).contains("Reported by :compileJava at ")
+
+        commit(CompileOutcome.FAILED)
+
+        assertThat(errorProneHighlights().single().toolTip).contains("A later compile of :compileJava failed")
+    }
+
     fun `test a later full build without diagnostics removes the highlight`() {
         commit(CompileOutcome.FULL, diagnostic(line = 2, column = 17))
         assertThat(errorProneHighlights()).hasSize(1)
