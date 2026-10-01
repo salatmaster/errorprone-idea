@@ -105,6 +105,23 @@ class ErrorProneTabTest : ErrorProneLightTestCase() {
         assertThat(buildTree(items, TabView(generated = false)).labels()).containsExactly("DeadException", "MissingOverride")
     }
 
+    fun `test shows only diagnostics on changed lines when asked`() {
+        myFixture.configureByText("Many.java", source)
+        commit(CompileOutcome.FULL, diagnostic(line = 2, column = 17), diagnostic(line = 3, column = 18, check = "EqualsGetClass"))
+        // The light project has no version control: mark one line changed by hand.
+        val items = items().map { if (it.line == 1) it.copy(changed = true) else it }
+
+        assertThat(buildTree(items, TabView(changedOnly = true)).labels()).containsExactly("MissingOverride")
+        assertThat(buildTree(items, TabView()).labels()).containsExactlyInAnyOrder("MissingOverride", "EqualsGetClass")
+    }
+
+    fun `test a commit with diagnostics on its changed lines is held up, one without is not`() {
+        assertThat(commitProblem(0)).isNull()
+        val problem = commitProblem(2)!!
+        assertThat(problem.text).isEqualTo("2 Error Prone diagnostics on lines this commit changes")
+        assertThat(problem.showDetailsAction).isEqualTo("Show in Error Prone Tab")
+    }
+
     private fun tab() = ErrorProneTab(project).also { Disposer.register(testRootDisposable, it) }
 
     private fun waitFor(condition: () -> Boolean) =

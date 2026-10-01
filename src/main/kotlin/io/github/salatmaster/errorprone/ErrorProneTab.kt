@@ -21,6 +21,7 @@ import com.intellij.openapi.application.ModalityState
 import com.intellij.openapi.application.ReadAction
 import com.intellij.openapi.command.WriteCommandAction
 import com.intellij.openapi.components.serviceIfCreated
+import com.intellij.openapi.editor.Document
 import com.intellij.openapi.editor.ex.util.EditorUtil
 import com.intellij.openapi.fileEditor.OpenFileDescriptor
 import com.intellij.openapi.ide.CopyPasteManager
@@ -32,6 +33,9 @@ import com.intellij.openapi.ui.Messages
 import com.intellij.openapi.ui.SimpleToolWindowPanel
 import com.intellij.openapi.ui.popup.JBPopupFactory
 import com.intellij.openapi.util.text.StringUtil
+import com.intellij.openapi.vcs.FileStatus
+import com.intellij.openapi.vcs.changes.ChangeListManager
+import com.intellij.openapi.vcs.impl.LineStatusTrackerManager
 import com.intellij.openapi.wm.ToolWindowId
 import com.intellij.openapi.wm.ToolWindowManager
 import com.intellij.pom.Navigatable
@@ -91,6 +95,9 @@ internal class ErrorProneTab(private val project: Project) :
 
     /** Why there is nothing to show, read with [items] when there is not. */
     private var empty = EmptyState("")
+
+    /** The documents this tab has version control track lines of, for Changed Lines Only. On the EDT. */
+    private val tracked = HashSet<Document>()
 
     private val model = DefaultTreeModel(DefaultMutableTreeNode())
     internal val tree = Tree(model).apply {
@@ -168,6 +175,7 @@ internal class ErrorProneTab(private val project: Project) :
             .finishOnUiThread(ModalityState.any()) { (items, empty) ->
                 this.items = items
                 empty?.let { this.empty = it }
+                if (view.changedOnly) trackChanges()
                 rebuild()
             }
             .submit(AppExecutorUtil.getAppExecutorService())
@@ -252,11 +260,39 @@ internal class ErrorProneTab(private val project: Project) :
         showDetails()
     }
 
+    /** What the next commit brings in: the diagnostics on changed lines, for now, not remembered. */
+    fun showChangedOnly() {
+        view = view.copy(changedOnly = true)
+        trackChanges()
+        rebuild()
+    }
+
     /** Changes what the tab shows, remembers it for the project, and shows it. */
     private fun change(update: (TabView) -> TabView) {
         view = update(view).copy(filter = filter.text)
         saveView(properties, view)
+        if (view.changedOnly) trackChanges() else untrackChanges()
         rebuild()
+    }
+
+    /**
+     * Has version control track the lines of the changed files shown that no editor has open, which it
+     * otherwise does not, and shows the tab again once it knows them.
+     */
+    private fun trackChanges() {
+        val changes = ChangeListManager.getInstance(project)
+        val trackers = LineStatusTrackerManager.getInstance(project)
+        val fresh = items.asSequence().distinctBy { it.file }
+            .filter { changes.getStatus(it.file) == FileStatus.MODIFIED && trackers.getLineStatusTracker(it.document) == null }
+            .map { it.document }
+            .filter(tracked::add)
+            .toList()
+        if (fresh.isNotEmpty()) requestTrackers(project, fresh, this) { refresh() }
+    }
+
+    private fun untrackChanges() {
+        releaseTrackers(project, tracked, this)
+        tracked.clear()
     }
 
     private fun keyOf(path: TreePath): String =
@@ -475,6 +511,7 @@ internal class ErrorProneTab(private val project: Project) :
                     }.toTypedArray(),
                     Separator.getInstance(),
                     toggle("Generated Code", null, { view.generated }) { on -> change { it.copy(generated = on) } },
+                    toggle("Changed Lines Only", null, { view.changedOnly }) { on -> change { it.copy(changedOnly = on) } },
                 ),
                 Separator.getInstance(),
                 common.createPrevOccurenceAction(this),
@@ -572,7 +609,7 @@ internal class ErrorProneTab(private val project: Project) :
     }
 
     /** The tab's content disposes of it, as it does of any Disposable component. */
-    override fun dispose() {}
+    override fun dispose() = untrackChanges()
 }
 
 /** Takes the viewport's width, so the details wrap rather than scroll sideways. */

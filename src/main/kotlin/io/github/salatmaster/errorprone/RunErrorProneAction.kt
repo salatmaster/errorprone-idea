@@ -211,11 +211,13 @@ fun runErrorProne(project: Project) {
     }
 }
 
-/** Brings the Problems tool window forward on its Error Prone tab. */
-internal fun showErrorProneTab(project: Project) {
+/** Brings the Problems tool window forward on its Error Prone tab, and hands the tab to [then]. */
+internal fun showErrorProneTab(project: Project, then: (ErrorProneTab) -> Unit = {}) {
     val window = ToolWindowManager.getInstance(project).getToolWindow(ToolWindowId.PROBLEMS_VIEW) ?: return
     window.show {
-        window.contentManager.contents.firstOrNull { it.component is ErrorProneTab }?.let(window.contentManager::setSelectedContent)
+        val content = window.contentManager.contents.firstOrNull { it.component is ErrorProneTab } ?: return@show
+        window.contentManager.setSelectedContent(content)
+        then(content.component as ErrorProneTab)
     }
 }
 

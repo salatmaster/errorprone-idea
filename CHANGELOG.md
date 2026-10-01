@@ -12,6 +12,10 @@ All notable changes to this plugin are documented here. The format follows
   the whole fix runs.
 - Settings | Tools | Error Prone can have any edit of Java code recompiled, not only one near a
   diagnostic, so new code gets Error Prone's findings without a build. Off by default.
+- Changed Lines Only, in the Error Prone tab's filter, shows the diagnostics on lines version control
+  sees changed. A commit with Error Prone diagnostics on the lines it changes asks first and links to
+  them; it reads what the last builds reported, compiling nothing, and can be turned off in the commit
+  options.
 - A diagnostic's tooltip and details say which compile reported it and when, and that it may be out of
   date once a later compile of that task failed. The Error Prone tab's status line counts failed
   compiles and tasks where javac stopped at its 100-warning limit.

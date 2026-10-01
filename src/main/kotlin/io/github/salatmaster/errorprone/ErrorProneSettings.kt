@@ -21,6 +21,7 @@ class ErrorProneSettings : SimplePersistentStateComponent<ErrorProneSettings.Opt
 
     class Options : BaseState() {
         var compileOnEdit by property(true)
+        var checkBeforeCommit by property(true)
         var compileOnAnyEdit by property(false)
     }
 
@@ -36,6 +37,13 @@ class ErrorProneSettings : SimplePersistentStateComponent<ErrorProneSettings.Opt
         get() = state.compileOnAnyEdit
         set(value) {
             state.compileOnAnyEdit = value
+        }
+
+    /** Whether a commit with Error Prone diagnostics on the lines it changes asks first; see [ErrorProneCommitCheck]. */
+    var checkBeforeCommit: Boolean
+        get() = state.checkBeforeCommit
+        set(value) {
+            state.checkBeforeCommit = value
         }
 
     companion object {

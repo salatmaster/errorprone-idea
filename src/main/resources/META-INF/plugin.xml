@@ -55,6 +55,7 @@
         <notificationGroup id="Error Prone" displayType="BALLOON"/>
         <problemsViewPanelProvider implementation="io.github.salatmaster.errorprone.ErrorProneProblemsTabProvider"/>
         <postStartupActivity implementation="io.github.salatmaster.errorprone.ErrorProneRestoreActivity"/>
+        <checkinHandlerFactory implementation="io.github.salatmaster.errorprone.ErrorProneCheckinHandlerFactory"/>
     </extensions>
 
     <!-- Every Gradle execution the IDE starts passes through here, including Build Project when it

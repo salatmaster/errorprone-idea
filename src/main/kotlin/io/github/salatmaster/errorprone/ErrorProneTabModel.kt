@@ -8,6 +8,9 @@ import com.intellij.openapi.module.ModuleManager
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.project.guessProjectDir
 import com.intellij.openapi.roots.ProjectFileIndex
+import com.intellij.openapi.vcs.FileStatus
+import com.intellij.openapi.vcs.changes.ChangeListManager
+import com.intellij.openapi.vcs.impl.LineStatusTrackerManager
 import com.intellij.openapi.vfs.VfsUtilCore
 import com.intellij.openapi.vfs.VirtualFile
 import com.intellij.util.text.DateFormatUtil
@@ -27,10 +30,12 @@ internal data class TabView(
     val generated: Boolean = true,
     val autoscroll: Boolean = false,
     val filter: String = "",
+    /** Only what is on lines version control sees changed: what the next commit brings in. */
+    val changedOnly: Boolean = false,
 ) {
     fun shows(item: TabItem): Boolean {
         val text = filter.trim()
-        return item.diagnostic.severity in severities && (generated || !item.generated) &&
+        return item.diagnostic.severity in severities && (generated || !item.generated) && (!changedOnly || item.changed) &&
             (text.isEmpty() || listOfNotNull(item.diagnostic.check, item.diagnostic.message, item.file.name, item.pkg, item.module).any { it.contains(text, ignoreCase = true) })
     }
 }
@@ -42,6 +47,7 @@ internal fun loadView(properties: PropertiesComponent) = TabView(
     severities = ErrorProneSeverity.entries.filterTo(HashSet()) { properties.getBoolean(PREFIX + it.name, true) },
     generated = properties.getBoolean(PREFIX + "generated", true),
     autoscroll = properties.getBoolean(PREFIX + "autoscroll", false),
+    changedOnly = properties.getBoolean(PREFIX + "changedOnly", false),
 )
 
 internal fun saveView(properties: PropertiesComponent, view: TabView) {
@@ -49,6 +55,7 @@ internal fun saveView(properties: PropertiesComponent, view: TabView) {
     ErrorProneSeverity.entries.forEach { properties.setValue(PREFIX + it.name, it in view.severities, true) }
     properties.setValue(PREFIX + "generated", view.generated, true)
     properties.setValue(PREFIX + "autoscroll", view.autoscroll, false)
+    properties.setValue(PREFIX + "changedOnly", view.changedOnly, false)
 }
 
 /**
@@ -56,9 +63,9 @@ internal fun saveView(properties: PropertiesComponent, view: TabView) {
  * The [document] and the file's [icon] are read here, in a read action: the tree paints on the EDT
  * without one, and a marker finds its document through FileDocumentManager, which needs it. [pkg] is the
  * file's directory under its source root, dotted as a package; [path] is the file's path from the project
- * directory.
+ * directory. [changed] says whether version control sees its line changed.
  */
-internal class TabItem(
+internal data class TabItem(
     val file: VirtualFile,
     val located: Located,
     val document: Document,
@@ -68,6 +75,7 @@ internal class TabItem(
     val icon: Icon?,
     val pkg: String = "",
     val path: String = file.path,
+    val changed: Boolean = false,
 ) {
     val diagnostic: ErrorProneDiagnostic get() = located.diagnostic
 
@@ -86,11 +94,41 @@ internal fun collectItems(project: Project): List<TabItem> {
         val icon = file.fileType.icon
         val pkg = index.getSourceRootForFile(file)?.let { VfsUtilCore.getRelativePath(file.parent, it, '.') }.orEmpty()
         val path = projectDir?.let { VfsUtilCore.getRelativePath(file, it) } ?: file.path
-        store.forFile(file).map {
-            val document = it.marker.document
-            TabItem(file, it, document, document.getLineNumber(it.range.startOffset), generated, module, icon, pkg, path)
+        val located = store.forFile(file)
+        val document = located.firstOrNull()?.marker?.document ?: return@flatMap emptyList()
+        val changed = changedLines(project, file, document)
+        located.map {
+            val line = document.getLineNumber(it.range.startOffset)
+            TabItem(file, it, document, line, generated, module, icon, pkg, path, changed(line))
         }
     }
+}
+
+/**
+ * Which lines (0-based) of [file] differ from what version control has, as its line status tracker says.
+ * A file version control sees added counts whole. A changed file has a tracker only while someone asks
+ * for one, an editor or [requestTrackers]; until then none of its lines counts. Call in a read action.
+ */
+internal fun changedLines(project: Project, file: VirtualFile, document: Document): (Int) -> Boolean {
+    val tracker = LineStatusTrackerManager.getInstance(project).getLineStatusTracker(document)
+    if (tracker != null && tracker.isOperational()) return tracker::isLineModified
+    val whole = ChangeListManager.getInstance(project).getStatus(file) in setOf(FileStatus.ADDED, FileStatus.UNKNOWN)
+    return { whole }
+}
+
+/**
+ * Has version control make line status trackers for [documents] on behalf of [requester], which
+ * [releaseTrackers] lets go of, and calls [then] once they have read their base revisions. On the EDT.
+ */
+internal fun requestTrackers(project: Project, documents: Collection<Document>, requester: Any, then: () -> Unit) {
+    val trackers = LineStatusTrackerManager.getInstance(project)
+    documents.forEach { trackers.requestTrackerFor(it, requester) }
+    trackers.invokeAfterUpdate(then)
+}
+
+internal fun releaseTrackers(project: Project, documents: Collection<Document>, requester: Any) {
+    val trackers = LineStatusTrackerManager.getInstance(project)
+    documents.forEach { trackers.releaseTrackerFor(it, requester) }
 }
 
 /** What a node of the tab's tree stands for; [key] tells the same node apart across rebuilds. */

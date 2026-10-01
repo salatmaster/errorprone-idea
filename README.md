@@ -38,6 +38,9 @@ build stays the source of truth.
   `path:line: [Check] message` lines.
 - **All fixes at once, by scope.** Apply All Error Prone Fixes asks for a scope as Inspect Code does —
   the project, a module, a directory — and gathers every fix into one patch to review file by file.
+- **What your change brings in.** *Changed Lines Only* in the tab's filter shows the diagnostics on
+  lines version control sees changed, and a commit whose changed lines have any asks first, from what
+  the last builds reported, without compiling anything.
 - **Current after every edit.** Two seconds after you stop typing near a diagnostic, the file is
   compiled quietly in the background, so a warning you fixed goes away without a build.
 - **Plugins included.** Checks from Error Prone plugins such as [NullAway](https://github.com/uber/NullAway)
@@ -77,6 +80,7 @@ build stays the source of truth.
 | <kbd>Build</kbd> → <kbd>Run Error Prone</kbd> | Recompile every Java source set in full, then show the Error Prone tab |
 | <kbd>Build</kbd> → <kbd>Apply All Error Prone Fixes…</kbd> | Every fix in a scope, as one patch; also under <kbd>Code</kbd> → <kbd>Analyze Code</kbd> and the Project view's <kbd>Analyze</kbd> |
 | <kbd>Settings</kbd> → <kbd>Tools</kbd> → <kbd>Error Prone</kbd> | Recompile in the background after edits near a diagnostic, after any edit of Java code, or never |
+| The commit options | *Check Error Prone diagnostics* on the lines a commit changes |
 | <kbd>Settings</kbd> → <kbd>Editor</kbd> → <kbd>Inspections</kbd> → **Error Prone** | Turn the highlighting off; <kbd>Code</kbd> → <kbd>Inspect Code</kbd> lists the diagnostics |
 
 ## How it works
