@@ -18,6 +18,10 @@
   <a href="LICENSE"><img src="https://img.shields.io/github/license/salatmaster/errorprone-idea" alt="License"></a>
 </p>
 
+<p align="center">
+  <img src="docs/screenshots/fixes.png" width="900" alt="Alt+Enter on an Error Prone highlight offers Error Prone's own fix, with a preview of the line it writes">
+</p>
+
 [Error Prone](https://errorprone.info) already runs in your build, but its findings end up in the build
 log as a file name and a line number. This plugin puts each one on the code it concerns, the way the IDE
 shows its own inspections, and lets you fix or suppress it from there. It uses your build's own Error
@@ -25,26 +29,76 @@ Prone, flags and plugins, and runs no checks of its own: your build stays the so
 
 ## Features
 
-- **In the editor.** An underline on the exact token, with the check, the message, Error Prone's
-  suggested fix and a link to the check's documentation in the tooltip.
-- **Fix or suppress with Alt+Enter.** Apply Error Prone's own fix, imports included, with a preview of
-  the line it writes. Or add `@SuppressWarnings` to the narrowest declaration around the diagnostic — a
-  variable, a method, a class — or a wider one from the submenu. Either is one undoable edit, and the
-  highlights it settles go at once.
-- **A tab in the Problems tool window.** Every diagnostic in the project, grouped by check or by file,
-  with a filter, severity toggles, and the details of the selection with its fix, suppression and
-  documentation a click away. <kbd>Ctrl+Alt+↓</kbd> steps to the next diagnostic even from the editor,
-  <kbd>Alt+Enter</kbd> on a row shows what can be done, and <kbd>Ctrl+C</kbd> copies the selection as
-  `path:line: [Check] message` lines.
+<img align="right" width="56%" hspace="14" src="docs/screenshots/alt-enter.png" alt="The Alt+Enter menu on an Error Prone highlight: apply Error Prone's fix, or suppress the check for the method">
+
+### Fix or suppress with <kbd>Alt</kbd>+<kbd>Enter</kbd>
+
+Apply Error Prone's own fix, imports included, with a preview of the line it writes. Or add
+`@SuppressWarnings` to the narrowest declaration around the diagnostic, or a wider one from the submenu.
+Either is one undoable edit.
+
+<br clear="all">
+<br>
+
+<img align="left" width="56%" hspace="14" src="docs/screenshots/tooltip.png" alt="The tooltip of a diagnostic: two checks on one expression, each with its message, suggested fix, link and the compile that reported it">
+
+### Every finding explained where it is
+
+An underline on the exact token. The tooltip has the check, the message, Error Prone's suggested fix, a
+link to the check's documentation, and which compile reported it and when.
+
+<br clear="all">
+<br>
+
+<img align="right" width="56%" hspace="14" src="docs/screenshots/tab.png" alt="The Error Prone tab of the Problems tool window, its diagnostics grouped by check">
+
+### The whole build in one tab
+
+A tab in the Problems tool window lists every diagnostic in the project, grouped by check or by file,
+with a filter and severity toggles. The details of the selection keep its fix, suppression and
+documentation a click away, and <kbd>Ctrl+Alt+↓</kbd> steps to the next diagnostic even from the editor.
+
+<br clear="all">
+<br>
+
+<img align="left" width="56%" hspace="14" src="docs/screenshots/whole-check.png" alt="The context menu of a check in the Error Prone tab">
+
+### A whole check at once
+
+Apply the fixes of a check across its files, or suppress every diagnostic of it, each in its own
+declaration. *Change Severity in Gradle…* shows what turns the check off or makes it an error in your
+build.
+
+<br clear="all">
+<br>
+
+<img align="right" width="56%" hspace="14" src="docs/screenshots/nullaway.png" alt="A NullAway diagnostic in the editor, with its tooltip">
+
+### Plugins included
+
+Checks from Error Prone plugins such as [NullAway](https://github.com/uber/NullAway) show up like the
+built-in ones.
+
+<br clear="all">
+<br>
+
+<img align="left" width="56%" hspace="14" src="docs/screenshots/commit.png" alt="The commit panel saying that two Error Prone diagnostics are on lines this commit changes">
+
+### What your change brings in
+
+*Changed Lines Only* in the tab's filter shows the diagnostics on lines version control sees changed, and
+a commit whose changed lines have any asks first, from what the last builds reported, without compiling
+anything.
+
+<br clear="all">
+<br>
+
+**Also:**
+
 - **All fixes at once, by scope.** Apply All Error Prone Fixes asks for a scope as Inspect Code does —
   the project, a module, a directory — and gathers every fix into one patch to review file by file.
-- **What your change brings in.** *Changed Lines Only* in the tab's filter shows the diagnostics on
-  lines version control sees changed, and a commit whose changed lines have any asks first, from what
-  the last builds reported, without compiling anything.
 - **Current after every edit.** Two seconds after you stop typing near a diagnostic, the file is
   compiled quietly in the background, so a warning you fixed goes away without a build.
-- **Plugins included.** Checks from Error Prone plugins such as [NullAway](https://github.com/uber/NullAway)
-  show up like the built-in ones.
 
 ## Getting started
 
