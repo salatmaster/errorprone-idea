@@ -218,11 +218,27 @@ class ErrorProneBuildListener(
  * task named is often a subproject's, and the root script is where the line goes.
  */
 internal fun maxWarningsSnippet(root: File): String =
-    if (File(root, "settings.gradle.kts").exists() || File(root, "build.gradle.kts").exists()) {
+    if (isKotlinDsl(root)) {
         """allprojects { tasks.withType<JavaCompile>().configureEach { options.compilerArgs.addAll(listOf("-Xmaxwarns", "10000")) } }"""
     } else {
         "allprojects { tasks.withType(JavaCompile).configureEach { options.compilerArgs.addAll(['-Xmaxwarns', '10000']) } }"
     }
+
+/**
+ * What sets [check]'s severity in every project of the Gradle build at [root] that applies
+ * net.ltgt.errorprone, in the DSL of its root script: [severity] is the plugin's method, `disable`, `warn`
+ * or `error`. Kotlin names the extension rather than importing the plugin's types, which a root script
+ * may not have on its classpath when only subprojects apply the plugin.
+ */
+internal fun checkSeveritySnippet(root: File, severity: String, check: String): String =
+    if (isKotlinDsl(root)) {
+        """allprojects { plugins.withId("net.ltgt.errorprone") { tasks.withType<JavaCompile>().configureEach { """ +
+            """(options as ExtensionAware).extensions.getByName("errorprone").withGroovyBuilder { "$severity"("$check") } } } }"""
+    } else {
+        "allprojects { plugins.withId('net.ltgt.errorprone') { tasks.withType(JavaCompile).configureEach { options.errorprone.$severity('$check') } } }"
+    }
+
+private fun isKotlinDsl(root: File) = File(root, "settings.gradle.kts").exists() || File(root, "build.gradle.kts").exists()
 
 /** javac's default -Xmaxwarns: it reports no more warnings than this per compilation. */
 internal const val JAVAC_MAX_WARNINGS = 100

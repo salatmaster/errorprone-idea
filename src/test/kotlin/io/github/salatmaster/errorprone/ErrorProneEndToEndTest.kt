@@ -222,6 +222,16 @@ class ErrorProneEndToEndTest {
     }
 
     @Test
+    fun `the copied line that disables a check works where it is pasted`() {
+        dir.resolve("build.gradle.kts").toFile().appendText("\n" + checkSeveritySnippet(dir.toFile(), "disable", "MissingOverride") + "\n")
+
+        val run = build("compileJava")
+
+        assertThat(run.failed).describedAs(run.output).isFalse()
+        assertThat(run.of(":compileJava").own.map { it.check }).isNotEmpty().doesNotContain("MissingOverride")
+    }
+
+    @Test
     fun `says when javac stopped reporting at its warning limit`() {
         // javac hands at most 100 warnings per compilation to Gradle (-Xmaxwarns), silently.
         val many = (0 until 110).joinToString("\n") { "  static class D$it { public String toString() { return \"\"; } }" }

@@ -104,6 +104,21 @@ class ErrorProneGradleExtensionTest : ErrorProneLightTestCase() {
         )
     }
 
+    fun `test writes the line that sets a check's severity, in the build's own DSL, for every project with Error Prone`() {
+        val groovy = tempDir()
+        val kotlin = tempDir().also { File(it, "settings.gradle.kts").writeText("") }
+
+        assertThat(checkSeveritySnippet(groovy, "disable", "MissingOverride")).isEqualTo(
+            "allprojects { plugins.withId('net.ltgt.errorprone') { tasks.withType(JavaCompile).configureEach { " +
+                "options.errorprone.disable('MissingOverride') } } }",
+        )
+        // Named rather than imported: the root script may not have the plugin on its classpath.
+        assertThat(checkSeveritySnippet(kotlin, "error", "MissingOverride")).isEqualTo(
+            "allprojects { plugins.withId(\"net.ltgt.errorprone\") { tasks.withType<JavaCompile>().configureEach { " +
+                "(options as ExtensionAware).extensions.getByName(\"errorprone\").withGroovyBuilder { \"error\"(\"MissingOverride\") } } } }",
+        )
+    }
+
     /** The notifications shown from now on, as they are shown. */
     private fun notifications(): List<Notification> = mutableListOf<Notification>().also { shown ->
         project.messageBus.connect(testRootDisposable).subscribe(Notifications.TOPIC, object : Notifications {

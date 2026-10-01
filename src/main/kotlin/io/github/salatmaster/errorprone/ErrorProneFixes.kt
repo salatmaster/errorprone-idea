@@ -153,6 +153,33 @@ internal class SuppressErrorProneFix(
 }
 
 /**
+ * Suppresses each of [diagnostics] in the narrowest declaration around it, as one command: each
+ * declaration gets its check once, however many of its diagnostics it holds. Returns how many it left
+ * alone, outside any declaration (an import, say), which stay shown.
+ */
+internal fun suppressAll(project: Project, diagnostics: List<Pair<VirtualFile, Located>>): Int {
+    val documents = PsiDocumentManager.getInstance(project)
+    documents.commitAllDocuments()
+    val byFile = diagnostics.groupBy({ it.first }, { it.second })
+        .mapNotNull { (file, located) -> PsiManager.getInstance(project).findFile(file)?.let { it to located } }
+    var placed = 0
+    WriteCommandAction.writeCommandAction(project, *byFile.map { it.first }.toTypedArray())
+        .withName("Suppress Error Prone Diagnostics")
+        .withGlobalUndo()
+        .run<RuntimeException> {
+            for ((psi, located) in byFile) {
+                // Found before any is annotated, while the offsets still fit the tree.
+                val owned = located.mapNotNull { l -> suppressionTargets(psi, l.marker.startOffset).firstOrNull()?.let { it to l } }
+                owned.map { (owner, l) -> owner to l.diagnostic.check }.distinct()
+                    .forEach { (owner, check) -> JavaSuppressionUtil.addSuppressAnnotation(project, owner, owner, check) }
+                documents.getDocument(psi)?.let { dismissUndoably(project, it, owned.map { (_, l) -> l.marker }) }
+                placed += owned.size
+            }
+        }
+    return diagnostics.size - placed
+}
+
+/**
  * The declarations around [offset] that `@SuppressWarnings` can go on, narrowest first. Not a lambda's
  * parameter, whose type may not be written out, nor an anonymous class, which has no modifiers.
  */

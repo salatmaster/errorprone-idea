@@ -21,6 +21,16 @@ All notable changes to this plugin are documented here. The format follows
 
 ### Changed
 
+- In the Error Prone tab, Next and Previous Occurrence step through the diagnostics, from the editor
+  too; Alt+Enter on a row shows what can be done with it; Copy puts every diagnostic under the selection
+  on the clipboard as `path:line: [Check] message`. Files show their package, and the filter matches
+  package and module names.
+- The Error Prone tab copies the Gradle line that turns a check off or makes it an error, in the build's
+  DSL, for the root build script.
+- A check or a file in the Error Prone tab can be acted on as a whole: Apply Fixes has Error Prone fix
+  the files shown without asking for a scope, and Suppress All adds `@SuppressWarnings` for every
+  diagnostic under it, each in its own declaration, after asking. A check says how many of its
+  diagnostics have a fix.
 - Run Error Prone cannot be started twice at once. The Error Prone tab shows it running, then how many
   diagnostics the run added or removed, and comes forward in place of the Build window once the run
   succeeds.

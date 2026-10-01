@@ -6,7 +6,9 @@ import com.intellij.ide.util.PropertiesComponent
 import com.intellij.openapi.editor.Document
 import com.intellij.openapi.module.ModuleManager
 import com.intellij.openapi.project.Project
+import com.intellij.openapi.project.guessProjectDir
 import com.intellij.openapi.roots.ProjectFileIndex
+import com.intellij.openapi.vfs.VfsUtilCore
 import com.intellij.openapi.vfs.VirtualFile
 import com.intellij.util.text.DateFormatUtil
 import org.gradle.util.GradleVersion
@@ -29,7 +31,7 @@ internal data class TabView(
     fun shows(item: TabItem): Boolean {
         val text = filter.trim()
         return item.diagnostic.severity in severities && (generated || !item.generated) &&
-            (text.isEmpty() || listOf(item.diagnostic.check, item.diagnostic.message, item.file.name).any { it.contains(text, ignoreCase = true) })
+            (text.isEmpty() || listOfNotNull(item.diagnostic.check, item.diagnostic.message, item.file.name, item.pkg, item.module).any { it.contains(text, ignoreCase = true) })
     }
 }
 
@@ -52,7 +54,9 @@ internal fun saveView(properties: PropertiesComponent, view: TabView) {
 /**
  * One diagnostic as the tab shows it; [line] (0-based) is where its code was when the tab last read it.
  * The [document] and the file's [icon] are read here, in a read action: the tree paints on the EDT
- * without one, and a marker finds its document through FileDocumentManager, which needs it.
+ * without one, and a marker finds its document through FileDocumentManager, which needs it. [pkg] is the
+ * file's directory under its source root, dotted as a package; [path] is the file's path from the project
+ * directory.
  */
 internal class TabItem(
     val file: VirtualFile,
@@ -62,6 +66,8 @@ internal class TabItem(
     val generated: Boolean,
     val module: String?,
     val icon: Icon?,
+    val pkg: String = "",
+    val path: String = file.path,
 ) {
     val diagnostic: ErrorProneDiagnostic get() = located.diagnostic
 
@@ -73,13 +79,16 @@ internal class TabItem(
 internal fun collectItems(project: Project): List<TabItem> {
     val store = ErrorProneDiagnostics.getInstance(project)
     val index = ProjectFileIndex.getInstance(project)
+    val projectDir = project.guessProjectDir()
     return store.files().flatMap { file ->
         val generated = isGeneratedCode(project, file)
         val module = index.getModuleForFile(file)?.name
         val icon = file.fileType.icon
+        val pkg = index.getSourceRootForFile(file)?.let { VfsUtilCore.getRelativePath(file.parent, it, '.') }.orEmpty()
+        val path = projectDir?.let { VfsUtilCore.getRelativePath(file, it) } ?: file.path
         store.forFile(file).map {
             val document = it.marker.document
-            TabItem(file, it, document, document.getLineNumber(it.range.startOffset), generated, module, icon)
+            TabItem(file, it, document, document.getLineNumber(it.range.startOffset), generated, module, icon, pkg, path)
         }
     }
 }
@@ -92,8 +101,8 @@ internal sealed interface TabNode {
 internal class CheckNode(val check: String, val items: List<TabItem>) : TabNode {
     val severity: ErrorProneSeverity = items.minOf { it.diagnostic.severity }
     val files: Int = items.distinctBy { it.file }.size
-    /** Error Prone has a fix for it somewhere but in generated code, where the next generation would undo it. */
-    val fixable: Boolean = items.any { it.diagnostic.fixable && !it.generated }
+    /** What Error Prone has a fix for, generated code aside, where the next generation would undo it. */
+    val fixable: List<TabItem> = items.filter { it.diagnostic.fixable && !it.generated }
     val link: String? = items.firstNotNullOfOrNull { it.diagnostic.link }
     override val key: String get() = "check:$check"
     override fun toString() = check

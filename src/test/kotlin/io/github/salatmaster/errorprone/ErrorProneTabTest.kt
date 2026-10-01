@@ -63,7 +63,7 @@ class ErrorProneTabTest : ErrorProneLightTestCase() {
         val check = root.child(1).userObject as CheckNode
         assertThat(check.items).hasSize(3)
         assertThat(check.files).isEqualTo(2)
-        assertThat(check.fixable).isTrue()
+        assertThat(check.fixable).hasSize(3)
         assertThat(root.child(1).labels()).containsExactly("Many.java", "Other.java")
         assertThat(root.child(1).child(0).children().toList().map { ((it as DefaultMutableTreeNode).userObject as ItemNode).item.line })
             .containsExactly(1, 2)
@@ -251,6 +251,81 @@ class ErrorProneTabTest : ErrorProneLightTestCase() {
             .containsExactly("a(Locale.ROOT)", "a(Locale.getDefault())")
     }
 
+    fun `test a check offers to fix what it shows without asking where, and to suppress it all`() {
+        myFixture.configureByText("Many.java", source)
+        val other = myFixture.addFileToProject("Other.java", source).virtualFile
+        val tab = tab()
+        commit(CompileOutcome.FULL, diagnostic(line = 2, column = 17, fixable = true), diagnostic(line = 3, column = 18))
+        store.commit(":compileTestJava", CompileOutcome.FULL, mapOf(other to listOf(diagnostic(line = 2, column = 17, fixable = true, path = other.path))))
+        waitFor { tab.tree.rowCount == 1 }
+
+        tab.tree.setSelectionRow(0)
+
+        // Error Prone fixes a check in a whole file, so the files are what the button can promise.
+        assertThat(buttons(tab).map { it.text }).containsExactly("Apply Fixes in 2 Files", "Suppress All 3…", "Documentation")
+        val rendered = TabRenderer().getTreeCellRendererComponent(Tree(), tab.tree.getPathForRow(0).lastPathComponent, false, false, false, 0, false)
+        assertThat((rendered as ColoredTreeCellRenderer).getCharSequence(false).toString()).contains("2 of 3 fixable")
+    }
+
+    fun `test suppresses everything a node holds, each in its own declaration, after asking`() {
+        myFixture.configureByText("Many.java", source)
+        val tab = tab()
+        commit(CompileOutcome.FULL, diagnostic(line = 2, column = 17), diagnostic(line = 3, column = 18))
+        waitFor { tab.tree.rowCount == 1 }
+        tab.tree.setSelectionRow(0)
+
+        TestDialogManager.setTestDialog(TestDialog.OK)
+        try {
+            buttons(tab).single { it.text == "Suppress All 2…" }.doClick()
+            waitFor { store.count() == 0 }
+        } finally {
+            TestDialogManager.setTestDialog(TestDialog.DEFAULT)
+        }
+
+        val text = myFixture.editor.document.text
+        assertThat(text.split("SuppressWarnings(\"MissingOverride\")")).hasSize(3)
+    }
+
+    fun `test copies the Gradle line that turns the selected check off`() {
+        myFixture.configureByText("Many.java", source)
+        val tab = tab()
+        commit(CompileOutcome.FULL, diagnostic(line = 2, column = 17))
+        waitFor { tab.tree.rowCount == 1 }
+        tab.tree.setSelectionRow(0)
+
+        tab.copyGradleLine("disable")
+
+        assertThat(CopyPasteManager.getInstance().getContents<String>(DataFlavor.stringFlavor)).contains("disable('MissingOverride')")
+    }
+
+    fun `test leaves alone what no declaration holds, and says so`() {
+        val text = "import java.util.List;\n$source"
+        myFixture.configureByText("Many.java", text)
+        val tab = tab()
+        // BadImport reports on the import, which no @SuppressWarnings can reach.
+        commit(CompileOutcome.FULL, diagnostic(line = 1, column = 8, check = "BadImport"), diagnostic(line = 3, column = 17, check = "BadImport"))
+        waitFor { tab.tree.rowCount == 1 }
+        tab.tree.setSelectionRow(0)
+        val shown = mutableListOf<Notification>()
+        project.messageBus.connect(testRootDisposable).subscribe(Notifications.TOPIC, object : Notifications {
+            override fun notify(notification: Notification) {
+                shown += notification
+            }
+        })
+
+        TestDialogManager.setTestDialog(TestDialog.OK)
+        try {
+            buttons(tab).single { it.text.startsWith("Suppress All") }.doClick()
+            waitFor { "SuppressWarnings(\"BadImport\")" in myFixture.editor.document.text }
+        } finally {
+            TestDialogManager.setTestDialog(TestDialog.DEFAULT)
+        }
+
+        // The one on the import still shows: nothing silences it.
+        assertThat(store.count()).isEqualTo(1)
+        assertThat(shown.map { it.content }).anyMatch { it.startsWith("1 diagnostic was left as it is") }
+    }
+
     fun `test suppresses from the tab as from the editor`() {
         myFixture.configureByText("Many.java", source)
         val tab = tab()
@@ -277,6 +352,61 @@ class ErrorProneTabTest : ErrorProneLightTestCase() {
         waitFor { tab.tree.rowCount == 3 }
         val selected = TreeUtil.getUserObject(tab.tree.selectionPath?.lastPathComponent) as? ItemNode
         assertThat(selected?.item?.diagnostic?.line).isEqualTo(3)
+    }
+
+    fun `test steps from diagnostic to diagnostic, across files, as Next Occurrence does`() {
+        myFixture.configureByText("Many.java", source)
+        val other = myFixture.addFileToProject("Other.java", source).virtualFile
+        val tab = tab()
+        commit(CompileOutcome.FULL, diagnostic(line = 2, column = 17), diagnostic(line = 3, column = 18))
+        store.commit(":compileTestJava", CompileOutcome.FULL, mapOf(other to listOf(diagnostic(line = 2, column = 17, path = other.path))))
+        waitFor { tab.tree.rowCount == 1 }
+
+        val visited = generateSequence { if (tab.hasNextOccurence()) tab.goNextOccurence() else null }
+            .map { (it.navigateable as OpenFileDescriptor).let { d -> d.file.name to d.offset } }
+            .toList()
+
+        assertThat(visited).containsExactly(
+            "Many.java" to source.indexOf("toString"),
+            "Many.java" to source.indexOf("equals"),
+            "Other.java" to source.indexOf("toString"),
+        )
+    }
+
+    fun `test Alt+Enter on a row opens what can be done with it`() {
+        val tab = tab()
+
+        assertThat(ActionUtil.getActions(tab.tree).map { it.shortcutSet.shortcuts.toList() })
+            .anyMatch { shortcuts -> shortcuts.any { it == KeyboardShortcut.fromString("alt ENTER") } }
+    }
+
+    fun `test copies every diagnostic under the selection, with where it is`() {
+        myFixture.configureByText("Many.java", source)
+        val other = myFixture.addFileToProject("com/example/Other.java", source).virtualFile
+        val tab = tab()
+        commit(CompileOutcome.FULL, diagnostic(line = 2, column = 17))
+        store.commit(":compileTestJava", CompileOutcome.FULL, mapOf(other to listOf(diagnostic(line = 2, column = 17, path = other.path))))
+        waitFor { tab.tree.rowCount == 1 }
+        tab.tree.setSelectionRow(0)
+
+        assertThat(tab.copyText()!!.lines()).containsExactly(
+            "Many.java:2: [MissingOverride] toString overrides method in Object; expected @Override",
+            "com/example/Other.java:2: [MissingOverride] toString overrides method in Object; expected @Override",
+        )
+    }
+
+    fun `test tells files of the same name apart by package, and filters by package and module`() {
+        myFixture.configureByText("Many.java", source)
+        val deep = myFixture.addFileToProject("com/example/Many.java", source).virtualFile
+        commit(CompileOutcome.FULL, diagnostic(line = 2, column = 17))
+        store.commit(":compileTestJava", CompileOutcome.FULL, mapOf(deep to listOf(diagnostic(line = 2, column = 17, check = "Deep", path = deep.path))))
+        val items = items()
+
+        assertThat(buildTree(items, TabView(filter = "com.example")).labels()).containsExactly("Deep")
+        assertThat(buildTree(items, TabView(filter = module.name)).labels()).containsExactlyInAnyOrder("Deep", "MissingOverride")
+        val file = buildTree(items, TabView(filter = "com.example")).child(0).child(0)
+        val rendered = TabRenderer().getTreeCellRendererComponent(Tree(), file, false, false, false, 0, false) as ColoredTreeCellRenderer
+        assertThat(rendered.getCharSequence(false).toString()).contains("Many.java", "com.example")
     }
 
     fun `test marks each diagnostic's severity when grouped by file`() {
@@ -352,7 +482,7 @@ class ErrorProneTabTest : ErrorProneLightTestCase() {
             mapOf(generated to listOf(diagnostic(line = 2, column = 17, check = "UnusedVariable", fixable = true, path = generated.path))),
         )
 
-        assertThat((buildTree(items(), TabView()).child(0).userObject as CheckNode).fixable).isFalse()
+        assertThat((buildTree(items(), TabView()).child(0).userObject as CheckNode).fixable).isEmpty()
     }
 
     fun `test selects one diagnostic at a time and wraps its details to the pane`() {

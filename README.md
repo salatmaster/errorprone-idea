@@ -33,7 +33,9 @@ build stays the source of truth.
   highlights it settles go at once.
 - **A tab in the Problems tool window.** Every diagnostic in the project, grouped by check or by file,
   with a filter, severity toggles, and the details of the selection with its fix, suppression and
-  documentation a click away.
+  documentation a click away. <kbd>Ctrl+Alt+↓</kbd> steps to the next diagnostic even from the editor,
+  <kbd>Alt+Enter</kbd> on a row shows what can be done, and <kbd>Ctrl+C</kbd> copies the selection as
+  `path:line: [Check] message` lines.
 - **All fixes at once, by scope.** Apply All Error Prone Fixes asks for a scope as Inspect Code does —
   the project, a module, a directory — and gathers every fix into one patch to review file by file.
 - **Current after every edit.** Two seconds after you stop typing near a diagnostic, the file is
@@ -107,6 +109,15 @@ javac reports at most 100 warnings per compile task. The notification copies the
 limit, in your build's DSL, for the root build script. The plugin does not add it itself: a compiler
 argument that differs between IDE and terminal builds would make every switch between them recompile
 everything.
+</details>
+
+<details>
+<summary><b>How do I turn a check off, or make it an error?</b></summary>
+
+In the build, where Error Prone's configuration lives: the plugin never edits build scripts. Right-click
+the check in the Error Prone tab and choose *Copy Gradle Line That Turns the Check Off* (or *Makes the
+Check an Error*), then paste it into the root build script; it is written in the build's DSL. To silence
+one place instead, suppress it with <kbd>Alt+Enter</kbd>.
 </details>
 
 <details>
