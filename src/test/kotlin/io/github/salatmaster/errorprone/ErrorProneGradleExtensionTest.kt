@@ -88,35 +88,7 @@ class ErrorProneGradleExtensionTest : ErrorProneLightTestCase() {
         val notification = shown.single()
         assertThat(notification.title).isEqualTo("Error Prone")
         assertThat(notification.content).contains(":compileJava")
-        assertThat(notification.actions.map { it.templateText }).containsExactly("Copy Gradle snippet")
-    }
-
-    fun `test writes the javac limit snippet for every project, in the build's own DSL`() {
-        val groovy = tempDir()
-        val kotlin = tempDir().also { File(it, "settings.gradle.kts").writeText("") }
-
-        // The task named is often a subproject's, and the root script is where people paste it.
-        assertThat(maxWarningsSnippet(groovy)).isEqualTo(
-            "allprojects { tasks.withType(JavaCompile).configureEach { options.compilerArgs.addAll(['-Xmaxwarns', '10000']) } }",
-        )
-        assertThat(maxWarningsSnippet(kotlin)).isEqualTo(
-            "allprojects { tasks.withType<JavaCompile>().configureEach { options.compilerArgs.addAll(listOf(\"-Xmaxwarns\", \"10000\")) } }",
-        )
-    }
-
-    fun `test writes the line that sets a check's severity, in the build's own DSL, for every project with Error Prone`() {
-        val groovy = tempDir()
-        val kotlin = tempDir().also { File(it, "settings.gradle.kts").writeText("") }
-
-        assertThat(checkSeveritySnippet(groovy, "disable", "MissingOverride")).isEqualTo(
-            "allprojects { plugins.withId('net.ltgt.errorprone') { tasks.withType(JavaCompile).configureEach { " +
-                "options.errorprone.disable('MissingOverride') } } }",
-        )
-        // Named rather than imported: the root script may not have the plugin on its classpath.
-        assertThat(checkSeveritySnippet(kotlin, "error", "MissingOverride")).isEqualTo(
-            "allprojects { plugins.withId(\"net.ltgt.errorprone\") { tasks.withType<JavaCompile>().configureEach { " +
-                "(options as ExtensionAware).extensions.getByName(\"errorprone\").withGroovyBuilder { \"error\"(\"MissingOverride\") } } } }",
-        )
+        assertThat(notification.actions.map { it.templateText }).containsExactly("Show How…")
     }
 
     /** The notifications shown from now on, as they are shown. */

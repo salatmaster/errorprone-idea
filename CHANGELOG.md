@@ -6,6 +6,14 @@ All notable changes to this plugin are documented here. The format follows
 
 ## [Unreleased]
 
+### Changed
+
+- Change Severity in Gradle…, in the Error Prone tab, and Show How…, in the notification about javac's
+  100-warning limit, open a window with what to add to the build, in Groovy or Kotlin, configured the way
+  gradle-errorprone-plugin documents it rather than through `allprojects`. It links the build's scripts
+  that apply Error Prone, where it goes, and copies the snippet. It replaces the two items that copied one
+  line for the root build script.
+
 ## [0.3.0] - 2026-10-01
 
 ### Added

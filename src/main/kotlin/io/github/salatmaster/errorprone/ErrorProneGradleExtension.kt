@@ -8,7 +8,6 @@ import com.intellij.openapi.components.Service
 import com.intellij.openapi.components.service
 import com.intellij.openapi.diagnostic.Logger
 import com.intellij.openapi.externalSystem.model.task.ExternalSystemTaskType
-import com.intellij.openapi.ide.CopyPasteManager
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.vfs.LocalFileSystem
 import com.intellij.openapi.vfs.VirtualFile
@@ -22,7 +21,6 @@ import org.gradle.util.GradleVersion
 import org.jetbrains.plugins.gradle.service.execution.GradleExecutionContext
 import org.jetbrains.plugins.gradle.service.project.GradleExecutionHelperExtension
 import org.jetbrains.plugins.gradle.settings.GradleExecutionSettings
-import java.awt.datatransfer.StringSelection
 import java.io.File
 import java.nio.file.InvalidPathException
 import java.nio.file.Path
@@ -100,10 +98,9 @@ class ErrorProneGradleExtension : GradleExecutionHelperExtension {
                     project.service<ErrorProneNotifier>().once(
                         "javac-limit",
                         "javac reported only the first $JAVAC_MAX_WARNINGS warnings of $task, so some of Error " +
-                            "Prone's findings there are missing. To see all of them, raise javac's limit in the " +
-                            "build's root script.",
-                        NotificationAction.createSimple("Copy Gradle snippet") {
-                            CopyPasteManager.getInstance().setContents(StringSelection(maxWarningsSnippet(File(build))))
+                            "Prone's findings there are missing. To see all of them, raise javac's limit.",
+                        NotificationAction.createSimpleExpiring("Show How…") {
+                            showGradleSnippet(project, File(build), GradleChange.WarningLimit)
                         },
                     )
                 },
@@ -212,36 +209,6 @@ class ErrorProneBuildListener(
         pending.getOrPut(task) { ArrayList() }.add(diagnostic)
     }
 }
-
-/**
- * What raises javac's warning limit, in the DSL of the Gradle build at [root], for every project: the
- * task named is often a subproject's, and the root script is where the line goes.
- */
-internal fun maxWarningsSnippet(root: File): String =
-    if (isKotlinDsl(root)) {
-        """allprojects { tasks.withType<JavaCompile>().configureEach { options.compilerArgs.addAll(listOf("-Xmaxwarns", "10000")) } }"""
-    } else {
-        "allprojects { tasks.withType(JavaCompile).configureEach { options.compilerArgs.addAll(['-Xmaxwarns', '10000']) } }"
-    }
-
-/**
- * What sets [check]'s severity in every project of the Gradle build at [root] that applies
- * net.ltgt.errorprone, in the DSL of its root script: [severity] is the plugin's method, `disable`, `warn`
- * or `error`. Kotlin names the extension rather than importing the plugin's types, which a root script
- * may not have on its classpath when only subprojects apply the plugin.
- */
-internal fun checkSeveritySnippet(root: File, severity: String, check: String): String =
-    if (isKotlinDsl(root)) {
-        """allprojects { plugins.withId("net.ltgt.errorprone") { tasks.withType<JavaCompile>().configureEach { """ +
-            """(options as ExtensionAware).extensions.getByName("errorprone").withGroovyBuilder { "$severity"("$check") } } } }"""
-    } else {
-        "allprojects { plugins.withId('net.ltgt.errorprone') { tasks.withType(JavaCompile).configureEach { options.errorprone.$severity('$check') } } }"
-    }
-
-private fun isKotlinDsl(root: File) = File(root, "settings.gradle.kts").exists() || File(root, "build.gradle.kts").exists()
-
-/** javac's default -Xmaxwarns: it reports no more warnings than this per compilation. */
-internal const val JAVAC_MAX_WARNINGS = 100
 
 /** How a finished task's diagnostics merge with what it reported before. */
 internal fun outcomeOf(result: TaskOperationResult): CompileOutcome = when {
