@@ -32,8 +32,12 @@ One module, one package, `io.github.salatmaster.errorprone`:
 | `ErrorProneDiagnostics.kt` | the per-project store: merge rules, RangeMarker anchoring, change topic |
 | `ErrorProneGradleExtension.kt` | the Gradle hook, the Tooling API listener, notifications |
 | `ErrorProneExternalAnnotator.kt`, `ErrorProneInspection.kt` | editor highlighting and its paired inspection |
-| `ErrorProneProblemsTab.kt` | the Problems tool window tab |
-| `RunErrorProneAction.kt` | Build \| Run Error Prone and its init script |
+| `ErrorProneFixes.kt` | Error Prone's fixes through patch builds, suppression, Apply All Error Prone Fixes |
+| `ErrorProneTab.kt`, `ErrorProneTabModel.kt` | the Problems tool window tab, and the model it shows |
+| `RunErrorProneAction.kt` | Build \| Run Error Prone, its init script, and the plugin's Gradle runs |
+| `CompileOnEdit.kt` | recompiling edited code in the background |
+| `ErrorProneCommitCheck.kt` | the check before a commit |
+| `ErrorProneSettings.kt` | Settings \| Tools \| Error Prone |
 
 Pure logic — parsing, column conversion, merge rules — is kept apart from the platform glue so it can
 be tested without it.

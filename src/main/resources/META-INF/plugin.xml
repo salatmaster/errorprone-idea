@@ -4,34 +4,37 @@
     <vendor email="abstractcoderx@gmail.com" url="https://github.com/salatmaster">salatmaster</vendor>
 
     <description><![CDATA[
-        <p><b>Error Prone's findings in the editor, on the code they are about.</b></p>
+        <p><b>Error Prone's findings from your Gradle build, on the code they are about, with their fixes a
+        keystroke away.</b></p>
 
-        <p><a href="https://errorprone.info">Error Prone</a> already runs in your Gradle build. Its
-        findings end up in the build log, as text with a file name and a line number, while the
-        code they are about is somewhere else. This plugin puts each diagnostic on that code:</p>
+        <p><a href="https://errorprone.info">Error Prone</a> already runs in your build. This plugin reads
+        what it reports while the IDE builds and puts each finding in the editor, where you can fix it,
+        suppress it or look it up. It uses your build's own Error Prone, its flags and its plugins, NullAway
+        included: there is nothing to download and nothing to configure twice.</p>
         <ul>
-          <li><b>An underline in the editor</b> at the exact token, with the check name, the message,
-              Error Prone's suggested fix and a link to the check's documentation in the tooltip</li>
-          <li><b>An "Error Prone" tab in the Problems tool window</b> listing every diagnostic in the
-              project</li>
-          <li><b>Code | Inspect Code</b> and the inspection profile, through the paired Error Prone
-              inspection</li>
-          <li><b>Build | Run Error Prone</b>, which recompiles every Java source set in full so every
-              file is analysed again</li>
+          <li><b>In the editor</b>: an underline on the exact token, with the check, the message, Error
+              Prone's suggested fixes and the check's documentation in the tooltip</li>
+          <li><b>Alt+Enter</b>: apply Error Prone's own fix, imports included, with a preview of the line it
+              writes, or suppress the check with <code>@SuppressWarnings</code> on the narrowest
+              declaration</li>
+          <li><b>An Error Prone tab</b> in the Problems tool window: group by check or by file, filter,
+              step through with the keyboard, fix or suppress a whole check at once, and see only what
+              your changes bring in</li>
+          <li><b>Apply All Error Prone Fixes</b> for a scope, as Inspect Code asks for one, reviewed file
+              by file in one patch</li>
+          <li><b>Build | Run Error Prone</b> recompiles every Java source set and shows what it found</li>
+          <li><b>Current as you type</b>: an edit near a diagnostic recompiles quietly in the
+              background</li>
+          <li><b>Before a commit</b>: diagnostics on the lines it changes are pointed out, with no build</li>
         </ul>
 
-        <p><b>Your build stays the source of truth.</b> The plugin runs no checks of its own and
-        changes nothing about how Error Prone is configured: it reads the diagnostics Gradle reports
-        while the IDE builds. They update with every build &mdash; a warning you fixed disappears
-        when the next build compiles that file &mdash; and follow your edits in between.</p>
-
-        <p><b>Structured, not scraped.</b> Diagnostics come from Gradle's Problems API through the
-        Tooling API, with their file, line and column, not from parsing console output.</p>
+        <p><b>Your build stays the source of truth.</b> The plugin runs no checks of its own and never
+        edits a build script. Diagnostics come from Gradle's Problems API through the Tooling API, with
+        their file, line and column, not from parsing console output.</p>
 
         <p>Requires Gradle 8.14 or newer with Error Prone set up in the build (for example with the
-        <code>net.ltgt.errorprone</code> Gradle plugin), and builds run from the IDE. Known
-        limitations are documented in the
-        <a href="https://github.com/salatmaster/errorprone-idea">README</a>.</p>
+        <code>net.ltgt.errorprone</code> Gradle plugin), and builds run from the IDE. Getting started and
+        known limitations are in the <a href="https://github.com/salatmaster/errorprone-idea">README</a>.</p>
 
         <p>Not affiliated with Google or the Error Prone project.</p>
     ]]></description>

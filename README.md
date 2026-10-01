@@ -20,8 +20,8 @@
 
 [Error Prone](https://errorprone.info) already runs in your build, but its findings end up in the build
 log as a file name and a line number. This plugin puts each one on the code it concerns, the way the IDE
-shows its own inspections, and lets you fix or suppress it from there. It runs no checks of its own: your
-build stays the source of truth.
+shows its own inspections, and lets you fix or suppress it from there. It uses your build's own Error
+Prone, flags and plugins, and runs no checks of its own: your build stays the source of truth.
 
 ## Features
 
@@ -66,8 +66,9 @@ build stays the source of truth.
    }
    ```
 
-3. **Build from the IDE** (<kbd>Build</kbd> → <kbd>Build Project</kbd>), or run <kbd>Build</kbd> →
-   <kbd>Run Error Prone</kbd> to analyse every file, not only the ones an incremental build recompiles.
+3. **Run Error Prone once**: <kbd>Build</kbd> → <kbd>Run Error Prone</kbd> recompiles every Java source
+   set, so every file is analysed, and shows the results. From then on, the builds the IDE runs keep them
+   current. If the Error Prone tab stays empty, it says why.
 
 **Requirements:** IntelliJ IDEA 2026.1 or newer, Gradle 8.14 or newer, builds run from the IDE.
 
