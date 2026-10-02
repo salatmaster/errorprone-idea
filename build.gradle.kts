@@ -83,7 +83,7 @@ tasks.test {
 
 // Developer convenience: ./gradlew runIde -PsampleProject=src/test/testData/sample opens that
 // project directly, so the plugin can be exercised without clicking through the welcome screen.
-tasks.runIde {
+fun org.jetbrains.intellij.platform.gradle.tasks.RunIdeTask.openSampleProject() {
     providers.gradleProperty("sampleProject").orNull?.let { path ->
         args(file(path).absolutePath)
         systemProperty("idea.trust.all.projects", "true")
@@ -93,6 +93,20 @@ tasks.runIde {
         systemProperty("jb.privacy.policy.text", "<!--999.999-->")
         systemProperty("idea.initially.ask.config", "never")
         systemProperty("idea.log.debug.categories", "io.github.salatmaster.errorprone")
+    }
+}
+
+tasks.runIde { openSampleProject() }
+
+// ./gradlew runIdeOn -PideVersion=263.6259.32 runs the sandbox on another IDE build, an EAP say: what
+// moves between platform versions shows only in the running IDE, the Plugin Verifier does not model how
+// the platform wires a plugin's class loader.
+providers.gradleProperty("ideVersion").orNull?.let { ideVersion ->
+    intellijPlatformTesting.runIde.register("runIdeOn") {
+        type = IntelliJPlatformType.IntellijIdea
+        version = ideVersion
+        useInstaller = true
+        task { openSampleProject() }
     }
 }
 

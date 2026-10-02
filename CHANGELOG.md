@@ -6,6 +6,12 @@ All notable changes to this plugin are documented here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- The Error Prone tab works in IntelliJ IDEA 2026.3 EAP: there the Problems tool window became a plugin
+  of its own, the tab failed to load with `NoClassDefFoundError: ProblemsViewTab`, and *Show in Error
+  Prone Tab* after a commit check threw.
+
 ## [0.3.1] - 2026-10-01
 
 ### Changed
