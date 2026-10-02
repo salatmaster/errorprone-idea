@@ -6,6 +6,8 @@ All notable changes to this plugin are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.3.2] - 2026-10-02
+
 ### Fixed
 
 - The Error Prone tab works in IntelliJ IDEA 2026.3 EAP: there the Problems tool window became a plugin
@@ -116,7 +118,8 @@ All notable changes to this plugin are documented here. The format follows
 - A diagnostic whose line was deleted, commented out or rewritten is hidden at once instead of
   sliding onto the next line's code.
 
-[unreleased]: https://github.com/salatmaster/errorprone-idea/compare/v0.3.1...HEAD
+[unreleased]: https://github.com/salatmaster/errorprone-idea/compare/v0.3.2...HEAD
+[0.3.2]: https://github.com/salatmaster/errorprone-idea/compare/v0.3.1...v0.3.2
 [0.3.1]: https://github.com/salatmaster/errorprone-idea/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/salatmaster/errorprone-idea/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/salatmaster/errorprone-idea/compare/v0.1.0...v0.2.0
