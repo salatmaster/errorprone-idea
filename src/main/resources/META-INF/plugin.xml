@@ -41,6 +41,11 @@
 
     <depends>com.intellij.java</depends>
     <depends>com.intellij.gradle</depends>
+    <!-- From 2026.3 the Problems tool window is a bundled plugin of its own rather than part of the
+         platform, and its classes are visible only to plugins that depend on it. Optional, because before
+         2026.3 no plugin has this id and the classes are the platform's. The file it names is empty: the
+         dependency is what matters. -->
+    <depends optional="true" config-file="errorprone-problems-view.xml">com.intellij.problemsView</depends>
 
     <extensions defaultExtensionNs="com.intellij">
         <applicationConfigurable parentId="tools"

@@ -10,6 +10,7 @@ Thanks for considering a contribution. This document assumes no prior knowledge 
 ./gradlew buildPlugin    # produce the plugin ZIP in build/distributions/
 ./gradlew verifyPlugin   # check compatibility with target IDEs
 ./gradlew runIde -PsampleProject=src/test/testData/sample   # sandbox IDE on the fixture project
+./gradlew runIdeOn -PideVersion=263.6259.32 -PsampleProject=src/test/testData/sample   # the same on another IDE build, an EAP say
 ```
 
 The build provisions its own JVM 21 toolchain. The first build downloads the IntelliJ Platform and
